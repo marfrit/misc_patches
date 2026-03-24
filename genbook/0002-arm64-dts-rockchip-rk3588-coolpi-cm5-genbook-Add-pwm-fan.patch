@@ -1,0 +1,70 @@
+From: PATCH 0002/0002
+Subject: [PATCH 2/2] arm64: dts: rockchip: rk3588-coolpi-cm5-genbook: Add pwm-fan with thermal cooling
+
+The CoolPi CM5 GenBook has a PWM-controlled fan connected to pwm15
+(mux m3, GPIO1_D7). Add a pwm-fan node driven at 20 kHz (50000 ns
+period) with six cooling levels, and wire it into the package thermal
+zone with two trip points at 55 °C and 65 °C.
+
+Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
+Signed-off-by: Markus Fritsche <mfritsche@reauktion.de>
+---
+ arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts | 45 +++++++++++++
+ 1 file changed, 45 insertions(+)
+
+--- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
+@@ -23,6 +23,13 @@
+ 		pwms = <&pwm6 0 25000 0>;
+ 	};
+
++	fan: pwm-fan {
++		compatible = "pwm-fan";
++		#cooling-cells = <2>;
++		pwms = <&pwm15 0 50000 0>;
++		cooling-levels = <1 50 100 150 200 254>;
++	};
++
+ 	battery: battery {
+ 		compatible = "simple-battery";
+ 		charge-full-design-microamp-hours = <9800000>;
+@@ -443,3 +450,39 @@
+ 		remote-endpoint = <&edp1_in_vp2>;
+ 	};
+ };
++
++&package_thermal {
++	polling-delay = <1000>;
++
++	trips {
++		package_fan0: package-fan0 {
++			temperature = <55000>;
++			hysteresis = <2000>;
++			type = "active";
++		};
++
++		package_fan1: package-fan1 {
++			temperature = <65000>;
++			hysteresis = <2000>;
++			type = "active";
++		};
++	};
++
++	cooling-maps {
++		map0 {
++			trip = <&package_fan0>;
++			cooling-device = <&fan THERMAL_NO_LIMIT 2>;
++		};
++
++		map1 {
++			trip = <&package_fan1>;
++			cooling-device = <&fan 3 THERMAL_NO_LIMIT>;
++		};
++	};
++};
++
++&pwm15 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&pwm15m3_pins>;
++	status = "okay";
++};

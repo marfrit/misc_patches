@@ -1,0 +1,29 @@
+From: PATCH 0003/0003
+Subject: [PATCH 3/3] arm64: dts: rockchip: rk3588-coolpi-cm5: fix power-off by enabling RK806 as system power controller
+
+Without the system-power-controller property the rk8xx-core driver never
+registers its sys_off handler (rk808_power_off), which writes the DEV_OFF
+bit to RK806_SYS_CFG3 at shutdown time.  As a result the RK806 PMIC does
+not cut power and the board remains partially active after "poweroff" —
+the heartbeat LED stops but internal activity continues.
+
+All other mainline RK3588 boards that use the RK806 carry this property
+(NanoPC-T6, Rock 5A, OrangePi 5, Jaguar, ...).  Add it to the CoolPi CM5
+PMIC node to restore proper power-off behaviour.
+
+Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
+Signed-off-by: Markus Fritsche <mfritsche@reauktion.de>
+---
+ arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5.dtsi | 1 +
+ 1 file changed, 1 insertion(+)
+
+--- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5.dtsi
++++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5.dtsi
+@@ -346,6 +346,7 @@
+ 		interrupts = <7 IRQ_TYPE_LEVEL_LOW>;
+ 		gpio-controller;
+ 		#gpio-cells = <2>;
++		system-power-controller;
+ 		pinctrl-names = "default";
+ 		pinctrl-0 = <&pmic_pins>, <&rk806_dvs1_null>,
+ 			    <&rk806_dvs2_null>, <&rk806_dvs3_null>;

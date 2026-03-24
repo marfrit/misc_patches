@@ -1,0 +1,97 @@
+From: PATCH 0004/0004
+Subject: [PATCH 4/4] arm64: dts: rockchip: rk3588-coolpi-cm5-genbook: enable speaker output
+
+The GenBook carrier board routes the ES8316 HPOL/HPOR outputs to both a
+headphone jack and an external speaker amplifier.  The amplifier is
+enabled by GPIO1_A6 (active-high) and headphone insertion is detected by
+GPIO1_B5 (active-high, pull-up).
+
+Add a label to the shared analog-sound node in the CM5 DTSI so the
+GenBook DTS can extend it, then override the node to:
+
+  - add pa-gpios for the speaker amplifier enable line (GPIO1_A6)
+  - add hp-det-gpios for headphone jack detection (GPIO1_B5)
+  - extend widgets/routing to include the Speaker path through the
+    audio-graph-card built-in "Amplifier" DAPM output-driver widget,
+    which gates the pa-gpios GPIO on widget power-up/down
+  - add the hp-det pinctrl group for GPIO1_B5
+
+The "Amplifier" DAPM widget (snd_soc_dapm_out_drv) is provided by
+audio-graph-card.c and registered at card level.  Its event handler
+drives pa-gpios high on SND_SOC_DAPM_POST_PMU and low on
+SND_SOC_DAPM_PRE_PMD, giving automatic speaker enable/disable in step
+with DAPM power management.
+
+DAPM path for speaker output:
+  ES8316 AIF1RX (DAI) -> Left/Right DAC -> Left/Right Headphone Mixer
+  -> Left/Right Headphone Driver -> HPOL/HPOR [codec OUTPUT pins]
+  -> Amplifier [card OUT_DRV, fires pa-gpios] -> Speaker [SPK terminal]
+
+The Left/Right Headphone Mixer Left/Right DAC Switch controls, which
+gate the DAC-to-mixer connections in the DAPM graph, are set on by the
+UCM BootSequence in the rk3588-es8316 ALSA UCM profile and must remain
+enabled for the path to be traversable.
+
+The HPOL/HPOR codec output pins also feed the Headphones HP widget:
+
+  HPOL/HPOR -> Headphones [HP terminal, jack-controlled via hp-det-gpios]
+
+Both the Speaker and Headphones paths are active whenever a PCM stream
+is running.  Speaker-muting when headphones are inserted is handled at
+the userspace (UCM) level via JackHWMute on the Speaker UCM device: when
+PipeWire routes audio away from the Speaker sink on headphone insertion,
+the absence of an active PCM consumer causes DAPM to power down the
+Amplifier widget and drive GPIO1_A6 low.
+
+Note: full speaker output also requires a Speaker SectionDevice in the
+rk3588-es8316 ALSA UCM HiFi.conf.  Without it the HiFi profile's only
+playback port is Headphones (jack-controlled), causing the profile to be
+reported as "not available" when no headphones are inserted, and
+PipeWire falls back to the pro-audio profile with no speaker sub-device.
+A separate patch to alsa-ucm-conf adds the missing Speaker device.
+
+Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
+Signed-off-by: Markus Fritsche <mfritsche@reauktion.de>
+---
+ .../boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts  | 25 ++++++++++++++
+ .../boot/dts/rockchip/rk3588-coolpi-cm5.dtsi         |  2 +-
+ 2 files changed, 26 insertions(+), 1 deletion(-)
+
+--- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5.dtsi
++++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5.dtsi
+@@ -24,7 +24,7 @@
+ 	analog-sound {
++	analog_sound: analog-sound {
+ 		compatible = "audio-graph-card";
+ 		dais = <&i2s0_8ch_p0>;
+ 		label = "rk3588-es8316";
+
+--- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
+@@ -286,6 +286,30 @@
++&analog_sound {
++	pa-gpios = <&gpio1 RK_PA6 GPIO_ACTIVE_HIGH>;
++	hp-det-gpios = <&gpio1 RK_PB5 GPIO_ACTIVE_HIGH>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&hp_det>;
++
++	widgets = "Microphone", "Mic Jack",
++		  "Headphone", "Headphones",
++		  "Speaker", "Speaker";
++
++	routing = "MIC2", "Mic Jack",
++		  "Headphones", "HPOL",
++		  "Headphones", "HPOR",
++		  "Amplifier", "HPOL",
++		  "Amplifier", "HPOR",
++		  "Speaker", "Amplifier";
++};
++
+ &pinctrl {
++	headphone {
++		hp_det: hp-det {
++			rockchip,pins = <1 RK_PB5 RK_FUNC_GPIO &pcfg_pull_up>;
++		};
++	};
++
+ 	lcd {

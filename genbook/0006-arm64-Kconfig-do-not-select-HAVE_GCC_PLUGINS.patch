@@ -1,0 +1,33 @@
+From: Markus Fritsche <mfritsche@localhost>
+Date: Tue, 24 Mar 2026 00:00:00 +0000
+Subject: [PATCH] arm64: Kconfig: do not select HAVE_GCC_PLUGINS
+
+GCC plugins intercept compilation in a way that ccache cannot observe:
+the plugin shared objects inject code after preprocessing, so the
+preprocessed-source hash that ccache computes does not capture plugin
+output.  Every object file built with a plugin is therefore a ccache
+miss, effectively disabling the cache.
+
+Remove the `select HAVE_GCC_PLUGINS` line from the ARM64 arch Kconfig.
+HAVE_GCC_PLUGINS is the only gate that allows GCC_PLUGINS (and the
+features that depend on it: STACKLEAK, LATENT_ENTROPY, the GCC-based
+RANDSTRUCT variant) to be enabled; dropping it makes those options
+invisible and leaves them off without requiring manual intervention in
+every .config.
+
+Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
+Signed-off-by: Markus Fritsche <mfritsche@localhost>
+---
+ arch/arm64/Kconfig | 1 -
+ 1 file changed, 1 deletion(-)
+
+--- a/arch/arm64/Kconfig
++++ b/arch/arm64/Kconfig
+@@ -229,7 +229,6 @@ config ARM64
+ 	select HAVE_FUNCTION_GRAPH_FREGS
+ 	select HAVE_FUNCTION_GRAPH_TRACER
+ 	select HAVE_GUP_FAST
+-	select HAVE_GCC_PLUGINS
+ 	select HAVE_HARDLOCKUP_DETECTOR_PERF if PERF_EVENTS && \
+ 		HW_PERF_EVENTS && HAVE_PERF_EVENTS_NMI
+ 	select HAVE_HW_BREAKPOINT if PERF_EVENTS

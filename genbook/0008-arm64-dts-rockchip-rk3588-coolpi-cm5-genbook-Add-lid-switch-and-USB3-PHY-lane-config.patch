@@ -1,0 +1,88 @@
+From: Markus Fritsche <mfritsche@localhost>
+Date: Tue, 24 Mar 2026 00:00:00 +0000
+Subject: [PATCH] arm64: dts: rockchip: rk3588-coolpi-cm5-genbook: add lid switch and USB3 PHY lane config
+
+The GenBook laptop has two features missing from the mainline DTS:
+
+1. Lid switch (MH248 hall-effect sensor on GPIO0_PB0)
+   The lid state is reported via a gpio-keys node using SW_LID / EV_SW.
+   The GPIO is active-low (low = lid closed) and pulled up.
+   wakeup-source is set so that opening the lid can wake the system from
+   suspend.  A sensor pinctrl group is added for the GPIO configuration.
+
+2. usbdp_phy1 lane mux (rockchip,dp-lane-mux = <2 3>)
+   The RK3588 usbdp_phy1 is a combo USB3 + DisplayPort PHY shared between
+   the USB3 host1 port (USB-A connector) and the DisplayPort output on the
+   GenBook board.  Lanes 0+1 carry USB3 SuperSpeed to the USB-A socket;
+   lanes 2+3 are routed to the DP connector.
+
+   Without this property the phy-rockchip-usbdp driver selects
+   UDPHY_MODE_USB and configures all four lanes as USB3.  That conflicts
+   with the physical routing on this board: lanes 2+3 are not connected to
+   the USB-A socket, so the 4-lane USB3 training fails silently and the
+   USB3 host1 DWC3 controller (usb_host1_xhci) cannot enumerate devices.
+
+   Setting rockchip,dp-lane-mux = <2 3> restricts USB3 to lanes 0+1,
+   matching the physical wiring, and enables correct SuperSpeed operation
+   on the USB-A port.
+
+   The USB2 EHCI host1 controller (usb_host1_ehci) shares the USB power
+   domain with usb_host1_xhci.  A stalled USB3 DWC3 probe can delay
+   power-domain activation in a way that prevents the EHCI hub (which
+   carries the integrated webcam) from being enumerated.  With the correct
+   lane mux both controllers probe cleanly and the webcam is detected.
+
+Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
+Signed-off-by: Markus Fritsche <mfritsche@localhost>
+---
+ .../boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts | 36 ++++++++++++++++++
+ 1 file changed, 35 insertions(+), 1 deletion(-)
+
+--- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
+@@ -9,6 +9,7 @@
+ #include <dt-bindings/leds/common.h>
+ #include <dt-bindings/soc/rockchip,vop2.h>
++#include <dt-bindings/input/linux-event-codes.h>
+ #include <dt-bindings/usb/pd.h>
+ #include "rk3588-coolpi-cm5.dtsi"
+
+@@ -158,6 +159,21 @@
+ 		pinctrl-0 = <&typec5v_pwren>;
+ 		vin-supply = <&vcc5v0_sys>;
+ 	};
++
++	gpio-key-lid {
++		compatible = "gpio-keys";
++		pinctrl-names = "default";
++		pinctrl-0 = <&mh248_irq_gpio>;
++
++		lid {
++			debounce-interval = <20>;
++			gpios = <&gpio0 RK_PB0 GPIO_ACTIVE_LOW>;
++			label = "Lid";
++			linux,code = <SW_LID>;
++			linux,input-type = <EV_SW>;
++			wakeup-source;
++		};
++	};
+ };
+
+@@ -375,4 +391,17 @@ &pinctrl {
+ 		pcie_wake: pcie-wake {
+ 			rockchip,pins = <4 RK_PA1 RK_FUNC_GPIO &pcfg_pull_up>;
+ 		};
+ 	};
++
++	sensor {
++		mh248_irq_gpio: mh248-irq-gpio {
++			rockchip,pins = <0 RK_PB0 RK_FUNC_GPIO &pcfg_pull_up>;
++		};
++	};
+ };
+
+@@ -544,6 +574,7 @@ &u2phy3_host {
+ &usbdp_phy1 {
++	rockchip,dp-lane-mux = <2 3>;
+ 	status = "okay";
+ };

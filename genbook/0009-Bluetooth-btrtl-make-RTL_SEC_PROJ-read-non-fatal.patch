@@ -1,0 +1,47 @@
+From: Markus Fritsche <mfritsche@localhost>
+Date: Tue, 24 Mar 2026 00:00:00 +0000
+Subject: [PATCH] Bluetooth: btrtl: make RTL_SEC_PROJ read non-fatal
+
+The RTL8852B (lmp_subver=0x8852, hci_rev=0x000b, HCI_USB) does not
+support HCI vendor opcode 0xfc61 during early initialization.
+btrtl_vendor_read_reg16() returns -ENODEV, which previously caused
+btrtl_initialize() to abort with ERR_PTR(-19) and left the controller
+unconfigured — visible as a kernel Oops and "No default controller
+available" in bluetoothctl.
+
+The RTL_SEC_PROJ register encodes a key_id used to match firmware
+security-header sections.  When key_id is 0 the driver already skips
+all security headers (drivers/bluetooth/btrtl.c, case
+RTL_PATCH_SECURITY_HEADER: "If key_id from chip is zero, ignore all
+security headers").  Defaulting to key_id=0 on read failure is
+therefore safe: unsigned firmware without an embedded key continues to
+load normally, while secure-firmware paths that require a non-zero
+key_id would only be taken on chips that successfully return one.
+
+Change btrtl_initialize() so that a failed RTL_SEC_PROJ read emits an
+informational message and falls back to key_id=0 instead of aborting
+initialization.
+
+Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
+Signed-off-by: Markus Fritsche <mfritsche@localhost>
+---
+ drivers/bluetooth/btrtl.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+--- a/drivers/bluetooth/btrtl.c
++++ b/drivers/bluetooth/btrtl.c
+@@ -1188,9 +1188,11 @@ check_version:
+
+ 	rc = btrtl_vendor_read_reg16(hdev, RTL_SEC_PROJ, reg_val);
+-	if (rc < 0)
+-		goto err_free;
+-
+-	key_id = reg_val[0];
++	if (rc < 0) {
++		rtl_dev_info(hdev, "RTL_SEC_PROJ read failed (%d), using key_id=0", rc);
++		key_id = 0;
++	} else {
++		key_id = reg_val[0];
++	}
+ 	btrtl_dev->key_id = key_id;
+ 	rtl_dev_info(hdev, "%s: key id %u", __func__, key_id);

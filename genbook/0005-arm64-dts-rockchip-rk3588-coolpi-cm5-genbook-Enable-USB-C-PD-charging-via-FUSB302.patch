@@ -1,0 +1,224 @@
+From: Markus Fritsche <mfritsche@localhost>
+Date: Tue, 24 Mar 2026 00:00:00 +0000
+Subject: [PATCH] arm64: dts: rockchip: rk3588-coolpi-cm5-genbook: add USB-C PD charging
+
+The GenBook carrier board exposes a USB Type-C port driven by the
+RK3588 USB3OTG0 controller (usb_host0_xhci / usbdp_phy0 combo).  The
+port uses a Fairchild FUSB302 (I²C address 0x22, bus i2c4) for USB
+Power Delivery negotiation.  Hardware signals:
+
+  GPIO0_PD5 – FUSB302 interrupt (active-low, shared with CC logic)
+  GPIO0_PA0 – VBUS switch enable (active-high)
+
+Without these changes the kernel registers usb_host0_xhci in
+peripheral-only, high-speed mode, which prevents PD negotiation and
+leaves the port unable to charge the battery.
+
+Changes:
+
+* Add #include <dt-bindings/usb/pd.h> for PDO_FIXED macros.
+
+* Add vcc5v0_otg regulator: GPIO0_PA0 active-high switch that gates
+  VBUS; used as vbus-supply for the FUSB302 and connected via the new
+  typec5v_pwren pinctrl entry.  The previously defined but unreferenced
+  usb_otg_pwren entry (same pin, wrong pull direction) is removed.
+
+* Add usbc0 (FUSB302) node inside &i2c4:
+  - compatible "fcs,fusb302", reg 0x22
+  - interrupt GPIO0_PD5 (IRQ_TYPE_LEVEL_LOW), pinctrl usbc0_int
+  - usb-c-connector child with:
+      data-role / power-role "dual", try-power-role "sink"
+      pd-revision 2.0 Ver 1.2 (maximum supported by FUSB302)
+      sink-pdos: 5 V/3 A, 9 V/3 A, 12 V/3 A, 15 V/3 A
+      source-pdos: 5 V/3 A
+      DisplayPort alt-mode (SVID 0xff01) declared for orientation
+      switching; three connector ports linking HS (→ usb_host0_xhci),
+      SS (→ usbdp_phy0) and SBU (→ usbdp_phy0) endpoints.
+
+* Expand &usbdp_phy0 to add mode-switch and orientation-switch
+  capabilities; register endpoint@0 (SS, linked to usbc0_ss) and
+  endpoint@1 (SBU, linked to usbc0_sbu).
+
+* Replace the &usb_host0_xhci override:
+  - remove dr_mode "peripheral" and maximum-speed "high-speed"
+    (the base DTSI already sets dr_mode "otg")
+  - add usb-role-switch and the port endpoint linked to usbc0_hs
+  This allows the TCPM stack to switch the controller between host
+  and device role as the PD contract dictates.
+
+* Add pinctrl group usb-typec with:
+  - usbc0_int: GPIO0_PD5 pull-up (FUSB302 /INT)
+  - typec5v_pwren: GPIO0_PA0 pull-down (VBUS switch, default off)
+
+DAPM / power flow:
+  USB-C charger → FUSB302 CC negotiation → TCPM requests VBUS →
+  vcc5v0_otg regulator enables GPIO0_PA0 → VBUS present on port →
+  DWC3 OTG detects VBUS, enters device/host mode per PD data-role.
+
+Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
+Signed-off-by: Markus Fritsche <mfritsche@localhost>
+---
+ .../boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts | 109 +++++++++++++++---
+ 1 file changed, 95 insertions(+), 14 deletions(-)
+
+--- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
+@@ -9,6 +9,7 @@
+ /dts-v1/;
+
+ #include <dt-bindings/leds/common.h>
+ #include <dt-bindings/soc/rockchip,vop2.h>
++#include <dt-bindings/usb/pd.h>
+ #include "rk3588-coolpi-cm5.dtsi"
+
+@@ -143,6 +143,20 @@
+ 		pinctrl-0 = <&usb_host_pwren>;
+ 		vin-supply = <&vcc5v0_usb>;
+ 	};
++
++	vcc5v0_otg: regulator-vcc5v0-otg {
++		compatible = "regulator-fixed";
++		regulator-name = "vcc5v0_otg";
++		regulator-min-microvolt = <5000000>;
++		regulator-max-microvolt = <5000000>;
++		enable-active-high;
++		gpio = <&gpio0 RK_PA0 GPIO_ACTIVE_HIGH>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&typec5v_pwren>;
++		vin-supply = <&vcc5v0_sys>;
++	};
+ };
+
+@@ -238,6 +252,60 @@
+ 		cellwise,monitor-interval-ms = <3000>;
+ 		monitored-battery = <&battery>;
+ 		power-supplies = <&charger>;
+ 	};
++
++	usbc0: usb-typec@22 {
++		compatible = "fcs,fusb302";
++		reg = <0x22>;
++		interrupt-parent = <&gpio0>;
++		interrupts = <RK_PD5 IRQ_TYPE_LEVEL_LOW>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&usbc0_int>;
++		vbus-supply = <&vcc5v0_otg>;
++
++		usb_con: connector {
++			compatible = "usb-c-connector";
++			label = "USB-C";
++			data-role = "dual";
++			power-role = "dual";
++			try-power-role = "sink";
++			op-sink-microwatt = <1000000>;
++			/* FUSB302 supports PD Rev 2.0 Ver 1.2 */
++			pd-revision = /bits/ 8 <0x2 0x0 0x1 0x2>;
++			sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_USB_COMM)>,
++				    <PDO_FIXED(9000, 3000, PDO_FIXED_USB_COMM)>,
++				    <PDO_FIXED(12000, 3000, PDO_FIXED_USB_COMM)>,
++				    <PDO_FIXED(15000, 3000, PDO_FIXED_USB_COMM)>;
++			source-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_USB_COMM)>;
++
++			altmodes {
++				displayport {
++					svid = /bits/ 16 <0xff01>;
++					vdo = <0xffffffff>;
++				};
++			};
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				port@0 {
++					reg = <0>;
++					usbc0_hs: endpoint {
++						remote-endpoint = <&usb_host0_xhci_to_usbc0>;
++					};
++				};
++
++				port@1 {
++					reg = <1>;
++					usbc0_ss: endpoint {
++						remote-endpoint = <&usbdp_phy0_ss>;
++					};
++				};
++
++				port@2 {
++					reg = <2>;
++					usbc0_sbu: endpoint {
++						remote-endpoint = <&usbdp_phy0_sbu>;
++					};
++				};
++			};
++		};
++	};
+ };
+
+@@ -389,7 +457,21 @@
+-&usbdp_phy0 {
+-	status = "okay";
+-};
++&usbdp_phy0 {
++	mode-switch;
++	orientation-switch;
++	status = "okay";
++
++	port {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		usbdp_phy0_ss: endpoint@0 {
++			reg = <0>;
++			remote-endpoint = <&usbc0_ss>;
++		};
++
++		usbdp_phy0_sbu: endpoint@1 {
++			reg = <1>;
++			remote-endpoint = <&usbc0_sbu>;
++		};
++	};
++};
+
+@@ -432,11 +514,15 @@
+ /* Type C port */
+-&usb_host0_xhci {
+-	dr_mode = "peripheral";
+-	maximum-speed = "high-speed";
+-	status = "okay";
+-};
++&usb_host0_xhci {
++	usb-role-switch;
++	status = "okay";
++
++	port {
++		usb_host0_xhci_to_usbc0: endpoint {
++			remote-endpoint = <&usbc0_hs>;
++		};
++	};
++};
+
+@@ -321,19 +543,24 @@
+ 	usb {
+ 		usb_pwren: usb-pwren {
+ 			rockchip,pins = <1 RK_PD5 RK_FUNC_GPIO &pcfg_pull_up>;
+ 		};
+
+-		usb_otg_pwren: usb-otg-pwren {
+-			rockchip,pins = <0 RK_PA0 RK_FUNC_GPIO &pcfg_pull_up>;
+-		};
+-
+ 		usb_host_pwren: usb-host-pwren {
+ 			rockchip,pins = <1 RK_PA7 RK_FUNC_GPIO &pcfg_pull_up>;
+ 		};
+ 	};
++
++	usb-typec {
++		usbc0_int: usbc0-int {
++			rockchip,pins = <0 RK_PD5 RK_FUNC_GPIO &pcfg_pull_up>;
++		};
++
++		typec5v_pwren: typec5v-pwren {
++			rockchip,pins = <0 RK_PA0 RK_FUNC_GPIO &pcfg_pull_down>;
++		};
++	};
