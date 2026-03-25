@@ -1,5 +1,5 @@
 diff --git a/drivers/video/rockchip/rk_edp.c b/drivers/video/rockchip/rk_edp.c
-index 0ba68dbce3d..739e8601926 100644
+index 0ba68dbce3d..e7d9ee2a63b 100644
 --- a/drivers/video/rockchip/rk_edp.c
 +++ b/drivers/video/rockchip/rk_edp.c
 @@ -9,9 +9,11 @@
@@ -107,7 +107,7 @@ index 0ba68dbce3d..739e8601926 100644
  	ret = rk_edp_link_train_cr(edp);
  	if (ret)
  		return ret;
-@@ -1025,9 +1071,37 @@ done:
+@@ -1025,9 +1071,36 @@ done:
  static int rk_edp_of_to_plat(struct udevice *dev)
  {
  	struct rk_edp_priv *priv = dev_get_priv(dev);
@@ -138,15 +138,14 @@ index 0ba68dbce3d..739e8601926 100644
 +		if (IS_ERR(priv->vo1_grf))
 +			return PTR_ERR(priv->vo1_grf);
 +
-+		priv->edp_id = dev_read_u32_default(dev, "reg", 0) ==
-+			       0xfded0000 ? 1 : 0;
++		priv->edp_id = (dev_read_addr(dev) == 0xfded0000) ? 1 : 0;
 +	} else {
 +		priv->grf = syscon_get_first_range(ROCKCHIP_SYSCON_GRF);
 +	}
  
  	return 0;
  }
-@@ -1086,6 +1160,35 @@ static int rk_edp_probe(struct udevice *dev)
+@@ -1086,6 +1159,35 @@ static int rk_edp_probe(struct udevice *dev)
  		return ret;
  	}
  
@@ -182,7 +181,7 @@ index 0ba68dbce3d..739e8601926 100644
  	int vop_id = uc_plat->source_id;
  	debug("%s, uc_plat=%p, vop_id=%u\n", __func__, uc_plat, vop_id);
  
-@@ -1150,10 +1253,16 @@ static const struct rockchip_dp_data rk3288_dp = {
+@@ -1150,10 +1252,16 @@ static const struct rockchip_dp_data rk3288_dp = {
  	.chip_type = RK3288_DP,
  };
  

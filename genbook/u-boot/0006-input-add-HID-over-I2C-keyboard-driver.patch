@@ -1,9 +1,9 @@
 diff --git a/drivers/input/hid_i2c_kbd.c b/drivers/input/hid_i2c_kbd.c
 new file mode 100644
-index 00000000000..37deae7d416
+index 00000000000..f8ebcacdb69
 --- /dev/null
 +++ b/drivers/input/hid_i2c_kbd.c
-@@ -0,0 +1,405 @@
+@@ -0,0 +1,411 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * HID-over-I2C keyboard driver for U-Boot
@@ -225,6 +225,12 @@ index 00000000000..37deae7d416
 +	priv->input_reg = le16_to_cpu(desc->wInputRegister);
 +	priv->max_input_len = le16_to_cpu(desc->wMaxInputLength);
 +	priv->cmd_reg = le16_to_cpu(desc->wCommandRegister);
++
++	if (priv->max_input_len < 4 || priv->max_input_len > 4096) {
++		dev_err(dev, "invalid wMaxInputLength: %u\n",
++			priv->max_input_len);
++		return -ENODEV;
++	}
 +
 +	dev_dbg(dev, "HID desc: input_reg=0x%04x max_input=%u cmd_reg=0x%04x\n",
 +		priv->input_reg, priv->max_input_len, priv->cmd_reg);

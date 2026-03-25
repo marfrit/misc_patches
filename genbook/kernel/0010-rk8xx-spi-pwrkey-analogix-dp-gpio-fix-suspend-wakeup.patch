@@ -19,6 +19,8 @@ ARM Trusted Firmware (TF-A) for RK3588 does.
 
    Replace irq_gc_set_wake with rockchip_irq_set_wake that propagates
    the wake setting to the parent bank->irq via irq_set_irq_wake().
+   On failure, revert the local wake state via irq_gc_set_wake(!on)
+   which handles gc->lock internally.
 
 2. analogix_dp_core.c: eDP IRQ left enabled after clock is gated.
 
@@ -30,7 +32,9 @@ ARM Trusted Firmware (TF-A) for RK3588 does.
    accesses registers on a dead bus, hanging synchronize_irq().
 
    Add disable_irq() before powering down and enable_irq() after
-   re-initialization in the resume path.
+   re-initialization in the resume path.  Ensure enable_irq() is
+   called even if clk_prepare_enable() fails, to avoid leaving the
+   IRQ permanently disabled.
 
 3. rk8xx-spi.c: missing PM ops and shutdown callback.
 
@@ -50,21 +54,20 @@ ARM Trusted Firmware (TF-A) for RK3588 does.
 Generated-by: Claude Opus 4.6 <noreply@anthropic.com>
 Signed-off-by: Markus Fritsche <mfritsche@localhost>
 ---
- drivers/gpio/gpio-rockchip.c                                | 21 ++++++++++++++++++++-
- drivers/gpu/drm/bridge/analogix/analogix_dp_core.c          |  4 ++++
+ drivers/gpio/gpio-rockchip.c                                | 17 ++++++++++++++++-
+ drivers/gpu/drm/bridge/analogix/analogix_dp_core.c          |  5 +++++
  drivers/input/misc/rk805-pwrkey.c                           |  5 +++++
  drivers/mfd/rk8xx-spi.c                                     |  8 ++++++++
  arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts  |  5 +++++
- 5 files changed, 42 insertions(+), 1 deletion(-)
+ 5 files changed, 39 insertions(+), 1 deletion(-)
 
 --- a/drivers/gpio/gpio-rockchip.c
 +++ b/drivers/gpio/gpio-rockchip.c
-@@ -486,6 +486,26 @@
+@@ -486,6 +486,22 @@
 +static int rockchip_irq_set_wake(struct irq_data *d, unsigned int on)
 +{
 +	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
 +	struct rockchip_pin_bank *bank = gc->private;
-+	u32 mask = d->mask;
 +	int ret;
 +
 +	ret = irq_gc_set_wake(d, on);
@@ -72,18 +75,14 @@ Signed-off-by: Markus Fritsche <mfritsche@localhost>
 +		return ret;
 +
 +	ret = irq_set_irq_wake(bank->irq, on);
-+	if (ret) {
-+		if (on)
-+			gc->wake_active &= ~mask;
-+		else
-+			gc->wake_active |= mask;
-+	}
++	if (ret)
++		irq_gc_set_wake(d, !on);
 +
 +	return ret;
 +}
 +
  static void rockchip_irq_suspend(struct irq_data *d)
-@@ -553,7 +573,7 @@
+@@ -553,7 +569,7 @@
 -	gc->chip_types[0].chip.irq_set_wake = irq_gc_set_wake;
 +	gc->chip_types[0].chip.irq_set_wake = rockchip_irq_set_wake;
  	gc->chip_types[0].chip.irq_suspend = rockchip_irq_suspend;
@@ -98,7 +97,17 @@ Signed-off-by: Markus Fritsche <mfritsche@localhost>
  	phy_power_off(dp->phy);
 
  	if (dp->plat_data->power_off)
-@@ -1607,6 +1609,8 @@ int analogix_dp_resume(struct analogix_dp_device *dp)
+@@ -1597,7 +1599,8 @@ int analogix_dp_resume(struct analogix_dp_device *dp)
+ 	ret = clk_prepare_enable(dp->clock);
+ 	if (ret < 0) {
+ 		DRM_ERROR("Failed to prepare_enable the clock clk [%d]\n", ret);
+-		return ret;
++		enable_irq(dp->irq);
++		return ret;
+ 	}
+
+ 	if (dp->plat_data->power_on)
+@@ -1609,6 +1612,8 @@ int analogix_dp_resume(struct analogix_dp_device *dp)
  	analogix_dp_init_dp(dp);
 
 +	enable_irq(dp->irq);

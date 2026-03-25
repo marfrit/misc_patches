@@ -1,41 +1,51 @@
 From: Markus Fritsche <mfritsche@localhost>
 Date: Tue, 24 Mar 2026 00:00:00 +0000
-Subject: [PATCH] alsa: ucm2: Rockchip/rk3588-es8316: add Speaker output device
+Subject: [PATCH] ucm2: Rockchip/rk3588-es8316: add Speaker device and SectionVerb
 
-The HiFi use-case profile for the RK3588 ES8316 codec previously defined
-only a Headphones output device (backed by the hp-det-gpios jack) and a
-Headset capture device.  Because the Headphones device carries a
-JackControl, its availability tracks the physical jack state: when no
-headphones are inserted the port is reported as "not available", which
-causes the entire HiFi profile to become unavailable.  PipeWire/
-WirePlumber therefore falls back to the low-priority "pro-audio" profile,
-producing a single undifferentiated "Built-in Audio Pro" sink with no
-speaker or headphone sub-devices visible to the user.
+The upstream rk3588-es8316 HiFi.conf only defines Headphones and Headset
+devices.  Boards like the CoolPi CM5 GenBook route the ES8316 HPOL/HPOR
+outputs through an external speaker amplifier controlled by pa-gpios in
+the audio-graph-card DTS node.  Without a Speaker UCM device the HiFi
+profile's only playback port is Headphones (jack-controlled), and
+PipeWire falls back to the pro-audio profile with no speaker sink.
 
-Add a Speaker SectionDevice without a JackControl so the device is always
-available and the HiFi profile remains selectable even without headphones.
-Add JackHWMute "Headphones" so that PipeWire routes audio away from the
-Speaker sink when headphones are inserted; the resulting absence of an
-active PCM consumer causes the kernel-side DAPM "Amplifier" output-driver
-widget to power down, driving the speaker-amplifier enable GPIO (GPIO1_A6)
-low and muting the speakers automatically.
+Add:
 
-The EnableSequence / DisableSequence of the Speaker device use the same
-Playback Polarity control as the Headphones device: Normal during playback,
-R Invert when disabled (which acoustic-cancels any residual cross-feed to a
-shared speaker line).  PlaybackPriority is set lower than Headphones (100
-vs 200) so that when headphones are available they are preferred by
-WirePlumber's automatic port selection.
+1. SectionVerb with EnableSequence that sets the Left/Right Headphone
+   Mixer DAC Switch controls to "on".  These DAPM mixer switches gate
+   the DAC-to-headphone-mixer path in the ES8316 and must be enabled
+   for any playback.  The BootSequence in rk3588-es8316.conf already
+   sets them, but DAPM's initial power evaluation after card
+   registration can clear DAPM mixer control state before a stream
+   opens.  Repeating the cset in the verb EnableSequence ensures the
+   switches survive verb activation.
+
+2. SectionDevice."Speaker" with:
+   - PlaybackPriority 100 (lower than Headphones at 200)
+   - JackHWMute "Headphones" so PipeWire mutes the speaker when
+     headphones are inserted
+   - Playback Polarity toggled to Normal/R Invert in Enable/Disable
+     sequences (matches the existing Headphones device pattern)
+
+Tested on CoolPi CM5 GenBook (RK3588, ES8316 codec on I2C7,
+audio-graph-card with pa-gpios on GPIO1_PA6).
 
 Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
 Signed-off-by: Markus Fritsche <mfritsche@localhost>
 ---
- Rockchip/rk3588-es8316/HiFi.conf | 19 +++++++++++++++++++
- 1 file changed, 19 insertions(+)
+ ucm2/Rockchip/rk3588-es8316/HiFi.conf | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
 
---- a/Rockchip/rk3588-es8316/HiFi.conf
-+++ b/Rockchip/rk3588-es8316/HiFi.conf
-@@ -1,2 +1,21 @@
+--- a/ucm2/Rockchip/rk3588-es8316/HiFi.conf
++++ b/ucm2/Rockchip/rk3588-es8316/HiFi.conf
+@@ -1,3 +1,30 @@
++SectionVerb {
++	EnableSequence [
++		cset "name='Left Headphone Mixer Left DAC Switch' on"
++		cset "name='Right Headphone Mixer Right DAC Switch' on"
++	]
++}
++
 +SectionDevice."Speaker" {
 +	Comment "Built-in Speakers"
 +
@@ -58,3 +68,4 @@ Signed-off-by: Markus Fritsche <mfritsche@localhost>
 +
  SectionDevice."Headphones" {
  	Comment "Headphones"
+

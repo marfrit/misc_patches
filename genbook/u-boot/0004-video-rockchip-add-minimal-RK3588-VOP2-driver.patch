@@ -1,9 +1,9 @@
 diff --git a/drivers/video/rockchip/rk3588_vop2.c b/drivers/video/rockchip/rk3588_vop2.c
 new file mode 100644
-index 00000000000..cee8086e6f3
+index 00000000000..6634756bdae
 --- /dev/null
 +++ b/drivers/video/rockchip/rk3588_vop2.c
-@@ -0,0 +1,509 @@
+@@ -0,0 +1,565 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Minimal RK3588 VOP2 driver for U-Boot
@@ -219,6 +219,53 @@ index 00000000000..cee8086e6f3
 +			0x1f, WIN_FORMAT_SHIFT, WIN_FORMAT_XRGB8888);
 +}
 +
++/*
++ * Configure the overlay layer mixer to route a window to a VP.
++ *
++ * OVL_LAYER_SEL (0x604): 8 x 4-bit fields mapping layer positions
++ * to physical window IDs (layer_sel_id).
++ *
++ * OVL_PORT_SEL (0x608): PORT_MUX fields define which layer positions
++ * belong to which VP. Layers 0..PORT0_MUX go to VP0,
++ * PORT0_MUX+1..PORT1_MUX go to VP1, etc. Value 8 = disabled.
++ *
++ * RK3588 layer_sel_id values (from kernel):
++ *   Cluster0=0, Cluster1=1, Esmart0=2, Esmart1=3,
++ *   Cluster2=4, Cluster3=5, Esmart2=6, Esmart3=7
++ */
++#define ESMART0_LAYER_SEL_ID	2
++#define OVL_PORT_MUX_DISABLED	8
++
++static void vop2_setup_layer_mixer(struct rk3588_vop2_priv *priv,
++				    int vp_id, int layer_sel_id)
++{
++	u32 port_sel = 0;
++	u32 layer_sel = 0xffffffff; /* all layers disabled (0xf each) */
++
++	/*
++	 * Put our single window at layer position 0 in the global stack,
++	 * and assign layer position 0 to our target VP.
++	 */
++	layer_sel &= ~(0xf << 0);
++	layer_sel |= (layer_sel_id << 0);
++
++	/*
++	 * PORT_MUX: VP with our layer gets position 0.
++	 * All other VPs get 8 (disabled).
++	 * PORT3_MUX is fixed at 7 on RK3588.
++	 */
++	for (int i = 0; i < 4; i++) {
++		u32 mux = (i == vp_id) ? 0 : OVL_PORT_MUX_DISABLED;
++
++		if (i == 3 && i != vp_id)
++			mux = 7; /* RK3588 fixed for VP3 */
++		port_sel |= (mux & 0xf) << (i * 4);
++	}
++
++	vop2_writel(priv, VOP2_OVL_LAYER_SEL, layer_sel);
++	vop2_writel(priv, VOP2_OVL_PORT_SEL, port_sel);
++}
++
 +static void vop2_cfg_done(struct rk3588_vop2_priv *priv)
 +{
 +	vop2_writel(priv, VOP2_REG_CFG_DONE, CFG_DONE_EN | 0x003f);
@@ -316,7 +363,7 @@ index 00000000000..cee8086e6f3
 +	ofnode remote;
 +	const char *compat;
 +	int vp_id, ret;
-+	int edp_id = -1, hdmi_id = -1;
++	int edp_id, hdmi_id;
 +
 +	ports = dev_read_subnode(dev, "ports");
 +	if (!ofnode_valid(ports))
@@ -330,6 +377,9 @@ index 00000000000..cee8086e6f3
 +
 +		/* Iterate through endpoints in this VP */
 +		ofnode_for_each_subnode(ep, port) {
++			edp_id = -1;
++			hdmi_id = -1;
++
 +			ret = ofnode_read_u32(ep, "remote-endpoint",
 +					     &remote_phandle);
 +			if (ret)
@@ -415,10 +465,14 @@ index 00000000000..cee8086e6f3
 +			/* Set up VP timing */
 +			vop2_vp_set_timing(priv, vp_id, &timing);
 +
-+			/* Configure ESMART window for framebuffer */
++			/* Configure ESMART0 window for framebuffer */
 +			vop2_setup_esmart_win(priv, 0, fbbase,
 +					      timing.hactive.typ,
 +					      timing.vactive.typ);
++
++			/* Route ESMART0 to this VP via layer mixer */
++			vop2_setup_layer_mixer(priv, vp_id,
++					       ESMART0_LAYER_SEL_ID);
 +
 +			/* Commit configuration */
 +			vop2_cfg_done(priv);
@@ -478,12 +532,14 @@ index 00000000000..cee8086e6f3
 +	(void)plat;
 +
 +	ret = rk3588_vop2_display_init(dev, plat->base);
-+	if (ret)
-+		debug("VOP2: display init returned %d\n", ret);
++	if (ret) {
++		debug("VOP2: display init returned %d (non-fatal)\n", ret);
++		return 0;
++	}
 +
 +	video_set_flush_dcache(dev, 1);
 +
-+	return ret;
++	return 0;
 +}
 +
 +static int rk3588_vop2_bind(struct udevice *dev)
