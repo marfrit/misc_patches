@@ -1,0 +1,60 @@
+From: Markus Fritsche <mfritsche@localhost>
+Date: Tue, 24 Mar 2026 00:00:00 +0000
+Subject: [PATCH] alsa: ucm2: Rockchip/rk3588-es8316: add Speaker output device
+
+The HiFi use-case profile for the RK3588 ES8316 codec previously defined
+only a Headphones output device (backed by the hp-det-gpios jack) and a
+Headset capture device.  Because the Headphones device carries a
+JackControl, its availability tracks the physical jack state: when no
+headphones are inserted the port is reported as "not available", which
+causes the entire HiFi profile to become unavailable.  PipeWire/
+WirePlumber therefore falls back to the low-priority "pro-audio" profile,
+producing a single undifferentiated "Built-in Audio Pro" sink with no
+speaker or headphone sub-devices visible to the user.
+
+Add a Speaker SectionDevice without a JackControl so the device is always
+available and the HiFi profile remains selectable even without headphones.
+Add JackHWMute "Headphones" so that PipeWire routes audio away from the
+Speaker sink when headphones are inserted; the resulting absence of an
+active PCM consumer causes the kernel-side DAPM "Amplifier" output-driver
+widget to power down, driving the speaker-amplifier enable GPIO (GPIO1_A6)
+low and muting the speakers automatically.
+
+The EnableSequence / DisableSequence of the Speaker device use the same
+Playback Polarity control as the Headphones device: Normal during playback,
+R Invert when disabled (which acoustic-cancels any residual cross-feed to a
+shared speaker line).  PlaybackPriority is set lower than Headphones (100
+vs 200) so that when headphones are available they are preferred by
+WirePlumber's automatic port selection.
+
+Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
+Signed-off-by: Markus Fritsche <mfritsche@localhost>
+---
+ Rockchip/rk3588-es8316/HiFi.conf | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+--- a/Rockchip/rk3588-es8316/HiFi.conf
++++ b/Rockchip/rk3588-es8316/HiFi.conf
+@@ -1,2 +1,21 @@
++SectionDevice."Speaker" {
++	Comment "Built-in Speakers"
++
++	EnableSequence [
++		cset "name='Playback Polarity' 'Normal'"
++	]
++
++	DisableSequence [
++		cset "name='Playback Polarity' 'R Invert'"
++	]
++
++	Value {
++		PlaybackPriority 100
++		PlaybackPCM "hw:${CardId}"
++		PlaybackMixerElem "Headphone Mixer"
++		PlaybackMasterElem "DAC"
++		JackHWMute "Headphones"
++	}
++}
++
+ SectionDevice."Headphones" {
+ 	Comment "Headphones"

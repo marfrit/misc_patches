@@ -1,0 +1,165 @@
+From: Markus Fritsche <mfritsche@localhost>
+Date: Tue, 25 Mar 2026 00:00:00 +0000
+Subject: [PATCH] gpio/drm/mfd/input/dts: fix suspend/resume and wakeup on RK3588
+
+Kernel-side fixes for suspend/resume on RK3588 boards.  Full
+suspend/resume also requires a PSCI firmware (BL31) that implements
+SYSTEM_SUSPEND — the Rockchip rkbin prebuilt BL31 does not; mainline
+ARM Trusted Firmware (TF-A) for RK3588 does.
+
+1. gpio-rockchip.c: irq_set_wake does not propagate to parent GIC.
+
+   The Rockchip GPIO irqchip uses irq_gc_set_wake() which only tracks
+   the wake state locally in gc->wake_active.  It never calls
+   irq_set_irq_wake() on the parent GIC interrupt for the GPIO bank.
+   During suspend, suspend_device_irqs() disables all non-wakeup IRQs
+   at the GIC level, so GPIO-based wakeup sources (RTC alarm, PMIC
+   power key) can never reach the CPU — the GPIO controller detects
+   the interrupt but the GIC blocks it.
+
+   Replace irq_gc_set_wake with rockchip_irq_set_wake that propagates
+   the wake setting to the parent bank->irq via irq_set_irq_wake().
+
+2. analogix_dp_core.c: eDP IRQ left enabled after clock is gated.
+
+   analogix_dp_suspend() powers off the PHY and disables the clock but
+   leaves the eDP IRQ enabled.  During the noirq suspend phase,
+   suspend_device_irqs() calls synchronize_irq() which waits for any
+   running handler to complete.  If the eDP controller fires a
+   spurious interrupt after the clock was gated, the hardirq handler
+   accesses registers on a dead bus, hanging synchronize_irq().
+
+   Add disable_irq() before powering down and enable_irq() after
+   re-initialization in the resume path.
+
+3. rk8xx-spi.c: missing PM ops and shutdown callback.
+
+   The I2C transport (rk8xx-i2c.c) wires up rk8xx_suspend/rk8xx_resume
+   and a shutdown callback, but the SPI transport does not.
+
+4. rk805-pwrkey.c: missing wake IRQ registration.
+
+   device_init_wakeup() only marks the device as wakeup-capable;
+   without dev_pm_set_wake_irq() the PM core never arms the IRQ.
+
+5. rk3588-coolpi-cm5-genbook.dts:
+   - i2c-hid touchpad: add wakeup-source
+   - Add NPU power domain (matching Rock 5B+ which has working
+     suspend), required for proper power-down sequencing
+
+Generated-by: Claude Opus 4.6 <noreply@anthropic.com>
+Signed-off-by: Markus Fritsche <mfritsche@localhost>
+---
+ drivers/gpio/gpio-rockchip.c                                | 21 ++++++++++++++++++++-
+ drivers/gpu/drm/bridge/analogix/analogix_dp_core.c          |  4 ++++
+ drivers/input/misc/rk805-pwrkey.c                           |  5 +++++
+ drivers/mfd/rk8xx-spi.c                                     |  8 ++++++++
+ arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts  |  5 +++++
+ 5 files changed, 42 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpio/gpio-rockchip.c
++++ b/drivers/gpio/gpio-rockchip.c
+@@ -486,6 +486,26 @@
++static int rockchip_irq_set_wake(struct irq_data *d, unsigned int on)
++{
++	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
++	struct rockchip_pin_bank *bank = gc->private;
++	u32 mask = d->mask;
++	int ret;
++
++	ret = irq_gc_set_wake(d, on);
++	if (ret)
++		return ret;
++
++	ret = irq_set_irq_wake(bank->irq, on);
++	if (ret) {
++		if (on)
++			gc->wake_active &= ~mask;
++		else
++			gc->wake_active |= mask;
++	}
++
++	return ret;
++}
++
+ static void rockchip_irq_suspend(struct irq_data *d)
+@@ -553,7 +573,7 @@
+-	gc->chip_types[0].chip.irq_set_wake = irq_gc_set_wake;
++	gc->chip_types[0].chip.irq_set_wake = rockchip_irq_set_wake;
+ 	gc->chip_types[0].chip.irq_suspend = rockchip_irq_suspend;
+
+--- a/drivers/gpu/drm/bridge/analogix/analogix_dp_core.c
++++ b/drivers/gpu/drm/bridge/analogix/analogix_dp_core.c
+@@ -1578,6 +1578,8 @@ EXPORT_SYMBOL_GPL(analogix_dp_probe);
+ int analogix_dp_suspend(struct analogix_dp_device *dp)
+ {
++	disable_irq(dp->irq);
++
+ 	phy_power_off(dp->phy);
+
+ 	if (dp->plat_data->power_off)
+@@ -1607,6 +1609,8 @@ int analogix_dp_resume(struct analogix_dp_device *dp)
+ 	analogix_dp_init_dp(dp);
+
++	enable_irq(dp->irq);
++
+ 	return 0;
+ }
+
+--- a/drivers/input/misc/rk805-pwrkey.c
++++ b/drivers/input/misc/rk805-pwrkey.c
+@@ -15,6 +15,7 @@
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/platform_device.h>
++#include <linux/pm_wakeirq.h>
+
+ static irqreturn_t pwrkey_fall_irq(int irq, void *_pwr)
+ {
+@@ -87,6 +88,10 @@ static int rk805_pwrkey_probe(struct platform_device *pdev)
+ 	platform_set_drvdata(pdev, pwr);
+ 	device_init_wakeup(&pdev->dev, true);
+
++	err = dev_pm_set_wake_irq(&pdev->dev, fall_irq);
++	if (err)
++		dev_warn(&pdev->dev, "Can't set wake IRQ %d: %d\n",
++			 fall_irq, err);
+ 	return 0;
+ }
+
+--- a/drivers/mfd/rk8xx-spi.c
++++ b/drivers/mfd/rk8xx-spi.c
+@@ -110,10 +110,18 @@ MODULE_DEVICE_TABLE(spi, rk8xx_spi_id_table);
+
++static void rk8xx_spi_shutdown(struct spi_device *spi)
++{
++	rk8xx_shutdown(&spi->dev);
++}
++
++static SIMPLE_DEV_PM_OPS(rk8xx_spi_pm_ops, rk8xx_suspend, rk8xx_resume);
++
+ static struct spi_driver rk8xx_spi_driver = {
+ 	.driver		= {
+ 		.name	= "rk8xx-spi",
+ 		.of_match_table = rk8xx_spi_of_match,
++		.pm = &rk8xx_spi_pm_ops,
+ 	},
+ 	.probe		= rk8xx_spi_probe,
++	.shutdown	= rk8xx_spi_shutdown,
+ 	.id_table	= rk8xx_spi_id_table,
+ };
+
+--- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
+@@ -342,8 +342,13 @@
+ 		interrupts = <RK_PD6 IRQ_TYPE_LEVEL_LOW>;
+ 		hid-descr-addr = <0x0020>;
++		wakeup-source;
+ 	};
+ };
+
++&pd_npu {
++	domain-supply = <&vdd_npu_s0>;
++};
++
+ &pwm6 {
