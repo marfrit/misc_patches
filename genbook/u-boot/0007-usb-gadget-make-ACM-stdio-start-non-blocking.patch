@@ -1,0 +1,24 @@
+diff --git a/drivers/usb/gadget/f_acm.c b/drivers/usb/gadget/f_acm.c
+index 8f7256069f5..f66e2c73ec2 100644
+--- a/drivers/usb/gadget/f_acm.c
++++ b/drivers/usb/gadget/f_acm.c
+@@ -649,13 +649,12 @@ static int acm_stdio_start(struct stdio_dev *dev)
+ 	else
+ 		return -ENODEV;
+ 
+-	while (!acm_connected(dev)) {
+-		if (ctrlc())
+-			return -ECANCELED;
+-
+-		schedule();
+-	}
+-
++	/*
++	 * Don't block waiting for host to connect. The I/O functions
++	 * handle the disconnected state gracefully: putc/puts buffer
++	 * and silently drop data, tstc returns 0.  The USB gadget is
++	 * active and will enumerate when a host connects.
++	 */
+ 	return 0;
+ }
+ 

@@ -1,0 +1,9 @@
+diff --git a/board/coolpi/genbook_cm5_rk3588/genbook_cm5_rk3588.env b/board/coolpi/genbook_cm5_rk3588/genbook_cm5_rk3588.env
+new file mode 100644
+index 00000000000..642f43ff6c7
+--- /dev/null
++++ b/board/coolpi/genbook_cm5_rk3588/genbook_cm5_rk3588.env
+@@ -0,0 +1,3 @@
++stdin=serial
++stdout=serial
++stderr=serial
