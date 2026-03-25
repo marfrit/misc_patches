@@ -1,0 +1,443 @@
+diff --git a/drivers/input/hid_i2c_kbd.c b/drivers/input/hid_i2c_kbd.c
+new file mode 100644
+index 00000000000..37deae7d416
+--- /dev/null
++++ b/drivers/input/hid_i2c_kbd.c
+@@ -0,0 +1,405 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * HID-over-I2C keyboard driver for U-Boot
++ *
++ * Implements the Microsoft HID-over-I2C protocol (v1.0) for keyboard
++ * input, following the UCLASS_KEYBOARD framework with input subsystem
++ * integration.
++ *
++ * Copyright (c) 2024 Collabora Ltd.
++ */
++
++#include <dm.h>
++#include <dm/device_compat.h>
++#include <i2c.h>
++#include <keyboard.h>
++#include <stdio_dev.h>
++#include <linux/delay.h>
++#include <linux/input.h>
++
++/* HID-over-I2C protocol constants */
++#define I2C_HID_REG_LEN		2	/* 16-bit LE register addresses */
++
++/* HID-over-I2C opcodes */
++#define I2C_HID_OPCODE_RESET		0x01
++#define I2C_HID_OPCODE_SET_POWER	0x08
++
++/* Power states */
++#define I2C_HID_PWR_ON			0x00
++#define I2C_HID_PWR_SLEEP		0x01
++
++/* HID descriptor (30 bytes) */
++struct i2c_hid_desc {
++	u16 wHIDDescLength;
++	u16 bcdVersion;
++	u16 wReportDescLength;
++	u16 wReportDescRegister;
++	u16 wInputRegister;
++	u16 wMaxInputLength;
++	u16 wOutputRegister;
++	u16 wMaxOutputLength;
++	u16 wCommandRegister;
++	u16 wDataRegister;
++	u16 wVendorID;
++	u16 wProductID;
++	u16 wVersionID;
++	u32 reserved;
++} __packed;
++
++/* HID boot keyboard modifier bits */
++#define HID_MOD_LEFTCTRL	BIT(0)
++#define HID_MOD_LEFTSHIFT	BIT(1)
++#define HID_MOD_LEFTALT		BIT(2)
++#define HID_MOD_LEFTGUI		BIT(3)
++#define HID_MOD_RIGHTCTRL	BIT(4)
++#define HID_MOD_RIGHTSHIFT	BIT(5)
++#define HID_MOD_RIGHTALT	BIT(6)
++#define HID_MOD_RIGHTGUI	BIT(7)
++
++/*
++ * Map HID keyboard usage codes to Linux input keycodes.
++ * HID usage 0x04 = KEY_A, 0x05 = KEY_B, etc.
++ */
++static const u8 hid_kbd_keymap[] = {
++	KEY_RESERVED, 0xff, 0xff, 0xff,
++	KEY_A, KEY_B, KEY_C, KEY_D,
++	KEY_E, KEY_F, KEY_G, KEY_H,
++	KEY_I, KEY_J, KEY_K, KEY_L,
++	KEY_M, KEY_N, KEY_O, KEY_P,
++	KEY_Q, KEY_R, KEY_S, KEY_T,
++	KEY_U, KEY_V, KEY_W, KEY_X,
++	KEY_Y, KEY_Z, KEY_1, KEY_2,
++	KEY_3, KEY_4, KEY_5, KEY_6,
++	KEY_7, KEY_8, KEY_9, KEY_0,
++	KEY_ENTER, KEY_ESC, KEY_BACKSPACE, KEY_TAB,
++	KEY_SPACE, KEY_MINUS, KEY_EQUAL, KEY_LEFTBRACE,
++	KEY_RIGHTBRACE, KEY_BACKSLASH, 0xff, KEY_SEMICOLON,
++	KEY_APOSTROPHE, KEY_GRAVE, KEY_COMMA, KEY_DOT,
++	KEY_SLASH, KEY_CAPSLOCK, KEY_F1, KEY_F2,
++	KEY_F3, KEY_F4, KEY_F5, KEY_F6,
++	KEY_F7, KEY_F8, KEY_F9, KEY_F10,
++	KEY_F11, KEY_F12, KEY_SYSRQ, KEY_SCROLLLOCK,
++	KEY_PAUSE, KEY_INSERT, KEY_HOME, KEY_PAGEUP,
++	KEY_DELETE, KEY_END, KEY_PAGEDOWN, KEY_RIGHT,
++	KEY_LEFT, KEY_DOWN, KEY_UP, KEY_NUMLOCK,
++	KEY_KPSLASH, KEY_KPASTERISK, KEY_KPMINUS, KEY_KPPLUS,
++	KEY_KPENTER, KEY_KP1, KEY_KP2, KEY_KP3,
++	KEY_KP4, KEY_KP5, KEY_KP6, KEY_KP7,
++	KEY_KP8, KEY_KP9, KEY_KP0, KEY_KPDOT,
++	KEY_BACKSLASH, KEY_COMPOSE, KEY_POWER, KEY_KPEQUAL,
++};
++
++#define HID_KBD_MAX_KEYS	6
++
++struct hid_kbd_report {
++	u8 modifiers;
++	u8 reserved;
++	u8 keycode[HID_KBD_MAX_KEYS];
++};
++
++struct hid_i2c_kbd_priv {
++	struct i2c_hid_desc desc;
++	u16 input_reg;
++	u16 max_input_len;
++	u16 cmd_reg;
++	u8 *input_buf;
++	struct hid_kbd_report old;
++	struct hid_kbd_report new;
++	bool has_report_id;
++};
++
++static int hid_i2c_read_reg(struct udevice *dev, u16 reg, u8 *buf, int len)
++{
++	u8 reg_buf[2];
++	struct i2c_msg msgs[2];
++	struct dm_i2c_chip *chip = dev_get_parent_plat(dev);
++
++	reg_buf[0] = reg & 0xff;
++	reg_buf[1] = (reg >> 8) & 0xff;
++
++	msgs[0].addr = chip->chip_addr;
++	msgs[0].flags = 0;
++	msgs[0].len = 2;
++	msgs[0].buf = reg_buf;
++
++	msgs[1].addr = chip->chip_addr;
++	msgs[1].flags = I2C_M_RD;
++	msgs[1].len = len;
++	msgs[1].buf = buf;
++
++	return dm_i2c_xfer(dev, msgs, 2);
++}
++
++static int hid_i2c_write_cmd(struct udevice *dev, u16 cmd_reg,
++			      u8 *cmd, int cmd_len)
++{
++	u8 buf[6]; /* max: 2 byte reg + 4 byte command */
++	struct i2c_msg msg;
++	struct dm_i2c_chip *chip = dev_get_parent_plat(dev);
++
++	if (cmd_len + 2 > sizeof(buf))
++		return -EINVAL;
++
++	buf[0] = cmd_reg & 0xff;
++	buf[1] = (cmd_reg >> 8) & 0xff;
++	memcpy(&buf[2], cmd, cmd_len);
++
++	msg.addr = chip->chip_addr;
++	msg.flags = 0;
++	msg.len = cmd_len + 2;
++	msg.buf = buf;
++
++	return dm_i2c_xfer(dev, &msg, 1);
++}
++
++static int hid_i2c_set_power(struct udevice *dev, u8 power_state)
++{
++	struct hid_i2c_kbd_priv *priv = dev_get_priv(dev);
++	u8 cmd[2];
++
++	cmd[0] = power_state;
++	cmd[1] = I2C_HID_OPCODE_SET_POWER;
++
++	return hid_i2c_write_cmd(dev, priv->cmd_reg, cmd, 2);
++}
++
++static int hid_i2c_reset(struct udevice *dev)
++{
++	struct hid_i2c_kbd_priv *priv = dev_get_priv(dev);
++	u8 cmd[2];
++	u8 buf[4];
++	int ret, tries;
++
++	cmd[0] = 0x00;
++	cmd[1] = I2C_HID_OPCODE_RESET;
++
++	ret = hid_i2c_write_cmd(dev, priv->cmd_reg, cmd, 2);
++	if (ret)
++		return ret;
++
++	/* Wait for reset completion — device sends 0x0000 length report */
++	for (tries = 0; tries < 50; tries++) {
++		mdelay(10);
++		ret = hid_i2c_read_reg(dev, priv->input_reg, buf, 2);
++		if (ret)
++			continue;
++		/* Length == 0 means reset complete */
++		if (buf[0] == 0 && buf[1] == 0)
++			return 0;
++	}
++
++	/* Some devices don't send the 0-length packet — proceed anyway */
++	return 0;
++}
++
++static int hid_i2c_fetch_hid_descriptor(struct udevice *dev, u16 desc_addr)
++{
++	struct hid_i2c_kbd_priv *priv = dev_get_priv(dev);
++	struct i2c_hid_desc *desc = &priv->desc;
++	int ret;
++
++	ret = hid_i2c_read_reg(dev, desc_addr, (u8 *)desc, sizeof(*desc));
++	if (ret) {
++		dev_err(dev, "failed to read HID descriptor: %d\n", ret);
++		return ret;
++	}
++
++	if (le16_to_cpu(desc->bcdVersion) != 0x0100) {
++		dev_err(dev, "unexpected HID version: 0x%04x\n",
++			le16_to_cpu(desc->bcdVersion));
++		return -ENODEV;
++	}
++
++	if (le16_to_cpu(desc->wHIDDescLength) != sizeof(*desc)) {
++		dev_err(dev, "unexpected HID descriptor length: %u\n",
++			le16_to_cpu(desc->wHIDDescLength));
++		return -ENODEV;
++	}
++
++	priv->input_reg = le16_to_cpu(desc->wInputRegister);
++	priv->max_input_len = le16_to_cpu(desc->wMaxInputLength);
++	priv->cmd_reg = le16_to_cpu(desc->wCommandRegister);
++
++	dev_dbg(dev, "HID desc: input_reg=0x%04x max_input=%u cmd_reg=0x%04x\n",
++		priv->input_reg, priv->max_input_len, priv->cmd_reg);
++	dev_dbg(dev, "HID desc: VID=0x%04x PID=0x%04x\n",
++		le16_to_cpu(desc->wVendorID), le16_to_cpu(desc->wProductID));
++
++	return 0;
++}
++
++static void hid_i2c_kbd_service_modifiers(struct input_config *input,
++					   struct hid_i2c_kbd_priv *priv)
++{
++	u8 new = priv->new.modifiers;
++	u8 old = priv->old.modifiers;
++
++	if ((new ^ old) & HID_MOD_LEFTCTRL)
++		input_add_keycode(input, KEY_LEFTCTRL,
++				  old & HID_MOD_LEFTCTRL);
++	if ((new ^ old) & HID_MOD_RIGHTCTRL)
++		input_add_keycode(input, KEY_RIGHTCTRL,
++				  old & HID_MOD_RIGHTCTRL);
++	if ((new ^ old) & HID_MOD_LEFTSHIFT)
++		input_add_keycode(input, KEY_LEFTSHIFT,
++				  old & HID_MOD_LEFTSHIFT);
++	if ((new ^ old) & HID_MOD_RIGHTSHIFT)
++		input_add_keycode(input, KEY_RIGHTSHIFT,
++				  old & HID_MOD_RIGHTSHIFT);
++	if ((new ^ old) & HID_MOD_LEFTALT)
++		input_add_keycode(input, KEY_LEFTALT,
++				  old & HID_MOD_LEFTALT);
++	if ((new ^ old) & HID_MOD_RIGHTALT)
++		input_add_keycode(input, KEY_RIGHTALT,
++				  old & HID_MOD_RIGHTALT);
++	if ((new ^ old) & HID_MOD_LEFTGUI)
++		input_add_keycode(input, KEY_LEFTMETA,
++				  old & HID_MOD_LEFTGUI);
++	if ((new ^ old) & HID_MOD_RIGHTGUI)
++		input_add_keycode(input, KEY_RIGHTMETA,
++				  old & HID_MOD_RIGHTGUI);
++}
++
++static void hid_i2c_kbd_service_key(struct input_config *input,
++				     struct hid_i2c_kbd_priv *priv,
++				     int i, int released)
++{
++	u8 *new_keys, *old_keys;
++
++	if (released) {
++		new_keys = priv->new.keycode;
++		old_keys = priv->old.keycode;
++	} else {
++		new_keys = priv->old.keycode;
++		old_keys = priv->new.keycode;
++	}
++
++	/* Check if key at position i in old is absent from new (released/pressed) */
++	if (old_keys[i] < 4)
++		return; /* ignore error codes and no-key */
++	if (memscan(new_keys, old_keys[i], HID_KBD_MAX_KEYS) !=
++	    new_keys + HID_KBD_MAX_KEYS)
++		return; /* key still present in new set */
++
++	if (old_keys[i] < ARRAY_SIZE(hid_kbd_keymap))
++		input_add_keycode(input, hid_kbd_keymap[old_keys[i]], released);
++}
++
++static int hid_i2c_kbd_check(struct input_config *input)
++{
++	struct udevice *dev = input->dev;
++	struct hid_i2c_kbd_priv *priv = dev_get_priv(dev);
++	u16 report_len;
++	u8 *report_data;
++	int data_offset;
++	int ret, i;
++
++	ret = hid_i2c_read_reg(dev, priv->input_reg,
++				priv->input_buf, priv->max_input_len);
++	if (ret)
++		return 0;
++
++	/* First 2 bytes are report length (LE) */
++	report_len = priv->input_buf[0] | (priv->input_buf[1] << 8);
++	if (report_len <= 2 || report_len > priv->max_input_len)
++		return 0;
++
++	/*
++	 * Data starts at offset 2. If the device uses numbered reports,
++	 * byte 2 is the report ID and keyboard data starts at offset 3.
++	 * Otherwise keyboard data starts at offset 2.
++	 */
++	data_offset = priv->has_report_id ? 3 : 2;
++
++	if (report_len - data_offset < (int)sizeof(struct hid_kbd_report))
++		return 0;
++
++	report_data = &priv->input_buf[data_offset];
++	priv->new.modifiers = report_data[0];
++	/* report_data[1] is reserved */
++	memcpy(priv->new.keycode, &report_data[2], HID_KBD_MAX_KEYS);
++
++	/* Process modifier changes */
++	hid_i2c_kbd_service_modifiers(input, priv);
++
++	/* Process key releases then key presses */
++	for (i = 0; i < HID_KBD_MAX_KEYS; i++) {
++		hid_i2c_kbd_service_key(input, priv, i, 1);
++		hid_i2c_kbd_service_key(input, priv, i, 0);
++	}
++
++	memcpy(&priv->old, &priv->new, sizeof(priv->old));
++
++	return 1;
++}
++
++static int hid_i2c_kbd_probe(struct udevice *dev)
++{
++	struct hid_i2c_kbd_priv *priv = dev_get_priv(dev);
++	struct keyboard_priv *uc_priv = dev_get_uclass_priv(dev);
++	struct stdio_dev *sdev = &uc_priv->sdev;
++	struct input_config *input = &uc_priv->input;
++	u32 hid_desc_addr;
++	int ret;
++
++	ret = dev_read_u32(dev, "hid-descr-addr", &hid_desc_addr);
++	if (ret) {
++		dev_err(dev, "missing hid-descr-addr property\n");
++		return -EINVAL;
++	}
++
++	/* Fetch the HID descriptor */
++	ret = hid_i2c_fetch_hid_descriptor(dev, (u16)hid_desc_addr);
++	if (ret)
++		return ret;
++
++	/* Allocate input report buffer */
++	priv->input_buf = malloc(priv->max_input_len);
++	if (!priv->input_buf)
++		return -ENOMEM;
++
++	/* Power on and reset the device */
++	ret = hid_i2c_set_power(dev, I2C_HID_PWR_ON);
++	if (ret)
++		dev_dbg(dev, "set_power failed: %d (continuing)\n", ret);
++	mdelay(60);
++
++	ret = hid_i2c_reset(dev);
++	if (ret)
++		dev_dbg(dev, "reset failed: %d (continuing)\n", ret);
++	mdelay(100);
++
++	/*
++	 * Assume standard HID boot keyboard protocol. Most HID keyboards
++	 * use report ID 1. Try to detect by checking if the max input
++	 * length suggests a report ID byte is present.
++	 * Boot keyboard: modifier(1) + reserved(1) + keys(6) = 8 bytes
++	 * With length prefix: 2 + 8 = 10, or 2 + 1(reportID) + 8 = 11
++	 */
++	priv->has_report_id = (priv->max_input_len > 10);
++
++	/* Register with input subsystem */
++	input->dev = dev;
++	input->read_keys = hid_i2c_kbd_check;
++	input_add_tables(input, false);
++	strcpy(sdev->name, "hidkbd");
++
++	return input_stdio_register(sdev);
++}
++
++static const struct keyboard_ops hid_i2c_kbd_ops = {
++};
++
++static const struct udevice_id hid_i2c_kbd_of_match[] = {
++	{ .compatible = "hid-over-i2c" },
++	{ /* sentinel */ }
++};
++
++U_BOOT_DRIVER(hid_i2c_kbd) = {
++	.name		= "hid_i2c_kbd",
++	.id		= UCLASS_KEYBOARD,
++	.of_match	= hid_i2c_kbd_of_match,
++	.probe		= hid_i2c_kbd_probe,
++	.priv_auto	= sizeof(struct hid_i2c_kbd_priv),
++	.ops		= &hid_i2c_kbd_ops,
++};
+diff --git a/drivers/input/Kconfig b/drivers/input/Kconfig
+index 47ce0ea690f..18b464b40e5 100644
+--- a/drivers/input/Kconfig
++++ b/drivers/input/Kconfig
+@@ -46,6 +46,15 @@ config APPLE_SPI_KEYB
+ 	  laptops based on Apple SoCs. These keyboards use an
+ 	  Apple-specific HID-over-SPI protocol.
+ 
++config HID_I2C_KEYBOARD
++	bool "HID-over-I2C keyboard support"
++	depends on DM_KEYBOARD && DM_I2C
++	select INPUT
++	help
++	  Enable support for keyboards connected via the HID-over-I2C
++	  protocol (Microsoft spec v1.0). This is used by many laptop
++	  keyboards including those on Rockchip-based laptops.
++
+ config BUTTON_KEYBOARD
+ 	bool "Buttons as keyboard"
+ 	depends on DM_KEYBOARD
+diff --git a/drivers/input/Makefile b/drivers/input/Makefile
+index 1303fcdb0b7..1f2cd0558b6 100644
+--- a/drivers/input/Makefile
++++ b/drivers/input/Makefile
+@@ -12,6 +12,7 @@ obj-$(CONFIG_CPCAP_POWER_BUTTON) += cpcap_pwrbutton.o
+ ifndef CONFIG_XPL_BUILD
+ 
+ obj-$(CONFIG_APPLE_SPI_KEYB) += apple_spi_kbd.o
++obj-$(CONFIG_HID_I2C_KEYBOARD) += hid_i2c_kbd.o
+ obj-$(CONFIG_I8042_KEYB) += i8042.o
+ obj-$(CONFIG_TEGRA_KEYBOARD) += input.o tegra-kbc.o
+ obj-$(CONFIG_TWL4030_INPUT) += twl4030.o

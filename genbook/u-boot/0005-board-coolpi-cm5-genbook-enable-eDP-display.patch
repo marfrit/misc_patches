@@ -1,11 +1,20 @@
 diff --git a/arch/arm/dts/rk3588-coolpi-cm5-genbook-u-boot.dtsi b/arch/arm/dts/rk3588-coolpi-cm5-genbook-u-boot.dtsi
-index 5a3073d6e7f..5a82ab6fa15 100644
+index 5a3073d6e7f..23b086b747d 100644
 --- a/arch/arm/dts/rk3588-coolpi-cm5-genbook-u-boot.dtsi
 +++ b/arch/arm/dts/rk3588-coolpi-cm5-genbook-u-boot.dtsi
-@@ -18,3 +18,22 @@
+@@ -18,3 +18,31 @@
  &usb_host1_xhci {
  	snps,dis_u3_susphy_quirk;
  };
++
++/* Internal keyboard on I2C5 */
++&i2c5 {
++	bootph-all;
++
++	touchpad@2c {
++		bootph-all;
++	};
++};
 +
 +/* eDP display pipeline */
 +&edp1 {
@@ -26,13 +35,17 @@ index 5a3073d6e7f..5a82ab6fa15 100644
 +	status = "okay";
 +};
 diff --git a/configs/coolpi-cm5-genbook-rk3588_defconfig b/configs/coolpi-cm5-genbook-rk3588_defconfig
-index 098aaad7233..48a872da7ab 100644
+index 098aaad7233..00d8c690058 100644
 --- a/configs/coolpi-cm5-genbook-rk3588_defconfig
 +++ b/configs/coolpi-cm5-genbook-rk3588_defconfig
-@@ -97,4 +97,14 @@ CONFIG_USB_OHCI_GENERIC=y
+@@ -97,4 +97,18 @@ CONFIG_USB_OHCI_GENERIC=y
  CONFIG_USB_DWC3=y
  CONFIG_USB_DWC3_GENERIC=y
  CONFIG_USB_GADGET=y
++CONFIG_USB_KEYBOARD=y
++CONFIG_DM_KEYBOARD=y
++CONFIG_HID_I2C_KEYBOARD=y
++CONFIG_CMD_BOOTMENU=y
 +CONFIG_VIDEO=y
 +CONFIG_DISPLAY=y
 +CONFIG_VIDEO_ROCKCHIP=y

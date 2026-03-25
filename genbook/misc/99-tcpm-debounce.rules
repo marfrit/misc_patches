@@ -1,0 +1,8 @@
+# Suppress rapid TCPM power supply change events during PD negotiation
+# On the CoolPi CM5 GenBook, the FUSB302 USB-C PD controller cycles through
+# multiple state transitions (CC detect → attach → PD negotiation → contract)
+# during boot with a charger connected.  Each transition generates a
+# power_supply udev event that KDE Plasma interprets as a charger
+# plug/unplug, causing repeated notification sounds at login.
+# The dc-charger (GPIO-based) still provides charger status to UPower.
+SUBSYSTEM=="power_supply", ATTR{type}=="USB", KERNEL=="tcpm-*", OPTIONS+="last_rule"
