@@ -1,0 +1,201 @@
+diff --git a/drivers/video/rockchip/rk_edp.c b/drivers/video/rockchip/rk_edp.c
+index 0ba68dbce3d..739e8601926 100644
+--- a/drivers/video/rockchip/rk_edp.c
++++ b/drivers/video/rockchip/rk_edp.c
+@@ -9,9 +9,11 @@
+ #include <dm.h>
+ #include <dm/device_compat.h>
+ #include <edid.h>
++#include <generic-phy.h>
+ #include <log.h>
+ #include <malloc.h>
+ #include <panel.h>
++#include <phy-dp.h>
+ #include <regmap.h>
+ #include <reset.h>
+ #include <syscon.h>
+@@ -41,9 +43,16 @@ static const char * const pre_emph_names[] = {
+ #define RK3399_GRF_SOC_CON20	0x6250
+ #define RK3399_GRF_SOC_CON25	0x6264
+ 
++#define RK3588_GRF_VO1_CON0	0x0000
++#define RK3588_GRF_VO1_CON1	0x0004
++#define RK3588_EDP_MODE		BIT(0)
++
++#define LINK_RATE_5_40GBPS	0x14
++
+ enum rockchip_dp_types {
+ 	RK3288_DP = 0,
+-	RK3399_EDP
++	RK3399_EDP,
++	RK3588_EDP,
+ };
+ 
+ struct rockchip_dp_data {
+@@ -52,14 +61,19 @@ struct rockchip_dp_data {
+ 	unsigned long reg_ref_clk_sel;
+ 	unsigned long ref_clk_sel_bit;
+ 	enum rockchip_dp_types chip_type;
++	bool has_phy;
+ };
+ 
+ struct rk_edp_priv {
+ 	struct rk3288_edp *regs;
+ 	void *grf;
++	struct regmap *vo1_grf;
+ 	struct udevice *panel;
++	struct phy phy;
+ 	struct link_train link_train;
+ 	u8 train_set[4];
++	bool has_phy;
++	int edp_id;
+ };
+ 
+ static void rk_edp_init_refclk(struct rk3288_edp *regs, enum rockchip_dp_types chip_type)
+@@ -361,6 +375,23 @@ static void rk_edp_set_link_training(struct rk_edp_priv *edp,
+ 
+ 	for (i = 0; i < edp->link_train.lane_count; i++)
+ 		writel(training_values[i], &edp->regs->ln_link_trn_ctl[i]);
++
++	if (edp->has_phy) {
++		struct phy_configure_opts_dp dp = {};
++
++		dp.link_rate = edp->link_train.link_rate * 27;
++		dp.lanes = edp->link_train.lane_count;
++		dp.set_voltages = 1;
++		for (i = 0; i < edp->link_train.lane_count; i++) {
++			dp.voltage[i] = (training_values[i] &
++					 DP_TRAIN_VOLTAGE_SWING_MASK) >>
++					DP_TRAIN_VOLTAGE_SWING_SHIFT;
++			dp.pre[i] = (training_values[i] &
++				     DP_TRAIN_PRE_EMPHASIS_MASK) >>
++				    DP_TRAIN_PRE_EMPHASIS_SHIFT;
++		}
++		generic_phy_configure(&edp->phy, &dp);
++	}
+ }
+ 
+ static u8 edp_link_status(const u8 *link_status, int r)
+@@ -634,7 +665,8 @@ static int rk_edp_init_training(struct rk_edp_priv *edp)
+ 	      edp->link_train.lane_count);
+ 
+ 	if ((edp->link_train.link_rate != LINK_RATE_1_62GBPS) &&
+-	    (edp->link_train.link_rate != LINK_RATE_2_70GBPS)) {
++	    (edp->link_train.link_rate != LINK_RATE_2_70GBPS) &&
++	    (edp->link_train.link_rate != LINK_RATE_5_40GBPS)) {
+ 		debug("Rx Max Link Rate is abnormal :%x\n",
+ 		      edp->link_train.link_rate);
+ 		return -EPERM;
+@@ -663,6 +695,20 @@ static int rk_edp_hw_link_training(struct rk_edp_priv *edp)
+ 	writel(edp->link_train.link_rate, &edp->regs->link_bw_set);
+ 	writel(edp->link_train.lane_count, &edp->regs->lane_count_set);
+ 
++	if (edp->has_phy) {
++		struct phy_configure_opts_dp dp = {};
++
++		dp.link_rate = edp->link_train.link_rate * 27;
++		dp.lanes = edp->link_train.lane_count;
++		dp.ssc = 1;
++		dp.set_rate = 1;
++		ret = generic_phy_configure(&edp->phy, &dp);
++		if (ret) {
++			printf("phy configure rate failed: %d\n", ret);
++			return ret;
++		}
++	}
++
+ 	ret = rk_edp_link_train_cr(edp);
+ 	if (ret)
+ 		return ret;
+@@ -1025,9 +1071,37 @@ done:
+ static int rk_edp_of_to_plat(struct udevice *dev)
+ {
+ 	struct rk_edp_priv *priv = dev_get_priv(dev);
++	struct rockchip_dp_data *edp_data =
++		(struct rockchip_dp_data *)dev_get_driver_data(dev);
+ 
+ 	priv->regs = dev_read_addr_ptr(dev);
+-	priv->grf = syscon_get_first_range(ROCKCHIP_SYSCON_GRF);
++	priv->has_phy = edp_data->has_phy;
++
++	if (edp_data->chip_type == RK3588_EDP) {
++		struct udevice *syscon;
++		int ret;
++
++		ret = generic_phy_get_by_name(dev, "dp", &priv->phy);
++		if (ret) {
++			dev_err(dev, "failed to get dp phy: %d\n", ret);
++			return ret;
++		}
++
++		ret = uclass_get_device_by_phandle(UCLASS_SYSCON, dev,
++						   "rockchip,grf", &syscon);
++		if (ret) {
++			dev_err(dev, "failed to get vo1_grf: %d\n", ret);
++			return ret;
++		}
++		priv->vo1_grf = syscon_get_regmap(syscon);
++		if (IS_ERR(priv->vo1_grf))
++			return PTR_ERR(priv->vo1_grf);
++
++		priv->edp_id = dev_read_u32_default(dev, "reg", 0) ==
++			       0xfded0000 ? 1 : 0;
++	} else {
++		priv->grf = syscon_get_first_range(ROCKCHIP_SYSCON_GRF);
++	}
+ 
+ 	return 0;
+ }
+@@ -1086,6 +1160,35 @@ static int rk_edp_probe(struct udevice *dev)
+ 		return ret;
+ 	}
+ 
++	if (edp_data->chip_type == RK3588_EDP) {
++		/* Set eDP mode in VO1 GRF */
++		regmap_write(priv->vo1_grf,
++			     priv->edp_id ? RK3588_GRF_VO1_CON1 :
++					    RK3588_GRF_VO1_CON0,
++			     (RK3588_EDP_MODE << 16) | RK3588_EDP_MODE);
++
++		/* Power on external PHY */
++		ret = generic_phy_set_mode(&priv->phy, PHY_MODE_DP, 0);
++		if (ret) {
++			dev_err(dev, "failed to set phy mode: %d\n", ret);
++			return ret;
++		}
++
++		ret = generic_phy_power_on(&priv->phy);
++		if (ret) {
++			dev_err(dev, "failed to power on phy: %d\n", ret);
++			return ret;
++		}
++
++		rockchip_edp_wait_hpd(priv);
++
++		rk_edp_init_interrupt(regs);
++		rk_edp_enable_sw_function(regs);
++		rk_edp_init_aux(regs);
++
++		return 0;
++	}
++
+ 	int vop_id = uc_plat->source_id;
+ 	debug("%s, uc_plat=%p, vop_id=%u\n", __func__, uc_plat, vop_id);
+ 
+@@ -1150,10 +1253,16 @@ static const struct rockchip_dp_data rk3288_dp = {
+ 	.chip_type = RK3288_DP,
+ };
+ 
++static const struct rockchip_dp_data rk3588_edp = {
++	.chip_type = RK3588_EDP,
++	.has_phy = true,
++};
++
+ static const struct udevice_id rockchip_dp_ids[] = {
+ 	{ .compatible = "rockchip,rk3288-dp", .data = (ulong)&rk3288_dp },
+ 	{ .compatible = "rockchip,rk3288-edp", .data = (ulong)&rk3288_dp },
+ 	{ .compatible = "rockchip,rk3399-edp", .data = (ulong)&rk3399_edp },
++	{ .compatible = "rockchip,rk3588-edp", .data = (ulong)&rk3588_edp },
+ 	{ }
+ };
+ 

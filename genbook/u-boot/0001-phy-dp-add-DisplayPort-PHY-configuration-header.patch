@@ -1,0 +1,37 @@
+diff --git a/include/phy-dp.h b/include/phy-dp.h
+new file mode 100644
+index 00000000000..85ef7bf1b8b
+--- /dev/null
++++ b/include/phy-dp.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * DisplayPort PHY configuration parameters
++ *
++ * Used for communication between DP/eDP controllers and their PHY drivers.
++ */
++
++#ifndef _PHY_DP_H
++#define _PHY_DP_H
++
++/**
++ * struct phy_configure_opts_dp - DisplayPort PHY configuration
++ * @link_rate:     Link rate in Mbps (1620, 2700, 5400, etc.)
++ * @lanes:         Number of active lanes (1, 2, or 4)
++ * @voltage:       Per-lane voltage swing level (0-3)
++ * @pre:           Per-lane pre-emphasis level (0-3)
++ * @ssc:           Enable spread spectrum clocking
++ * @set_rate:      If true, configure PLL for the given link_rate
++ * @set_voltages:  If true, configure per-lane voltage/pre-emphasis
++ */
++struct phy_configure_opts_dp {
++	unsigned int link_rate;
++	unsigned int lanes;
++	unsigned int voltage[4];
++	unsigned int pre[4];
++	unsigned int ssc : 1;
++	unsigned int set_rate : 1;
++	unsigned int set_voltages : 1;
++};
++
++#endif /* _PHY_DP_H */

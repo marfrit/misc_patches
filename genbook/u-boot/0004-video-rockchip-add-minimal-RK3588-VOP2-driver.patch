@@ -1,0 +1,551 @@
+diff --git a/drivers/video/rockchip/rk3588_vop2.c b/drivers/video/rockchip/rk3588_vop2.c
+new file mode 100644
+index 00000000000..cee8086e6f3
+--- /dev/null
++++ b/drivers/video/rockchip/rk3588_vop2.c
+@@ -0,0 +1,509 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Minimal RK3588 VOP2 driver for U-Boot
++ *
++ * Copyright (c) 2024 Collabora Ltd.
++ *
++ * Only supports single eDP/HDMI output for boot display.
++ * Ported from Rockchip downstream U-Boot VOP2 driver.
++ */
++
++#include <clk.h>
++#include <display.h>
++#include <dm.h>
++#include <dm/device_compat.h>
++#include <dm/device-internal.h>
++#include <dm/uclass-internal.h>
++#include <log.h>
++#include <panel.h>
++#include <regmap.h>
++#include <reset.h>
++#include <syscon.h>
++#include <video.h>
++#include <asm/io.h>
++#include <asm/arch-rockchip/clock.h>
++#include <linux/bitfield.h>
++
++/* VOP2 system registers */
++#define VOP2_REG_CFG_DONE		0x000
++#define  CFG_DONE_EN			BIT(15)
++
++#define VOP2_VERSION_INFO		0x004
++#define VOP2_AUTO_GATING_CTRL		0x008
++#define VOP2_SYS_AXI_LUT_CTRL		0x024
++
++/* Display interface enable/mux */
++#define VOP2_DSP_IF_EN			0x028
++#define  RK3588_EDP0_EN_SHIFT		2
++#define  RK3588_HDMI0_EN_SHIFT		3
++#define  RK3588_EDP1_EN_SHIFT		4
++#define  RK3588_HDMI1_EN_SHIFT		5
++#define  IF_MUX_MASK			3
++#define  RK3588_HDMI_EDP0_MUX_SHIFT	16
++#define  RK3588_HDMI_EDP1_MUX_SHIFT	18
++
++#define VOP2_DSP_IF_CTRL		0x02c
++#define  HDMI_EDP0_DCLK_DIV_SHIFT	0
++#define  HDMI_EDP0_PIXCLK_DIV_SHIFT	4
++#define  HDMI_EDP1_DCLK_DIV_SHIFT	8
++#define  HDMI_EDP1_PIXCLK_DIV_SHIFT	12
++
++/* VOP2 GRF registers */
++#define RK3588_GRF_VOP_CON2		0x0008
++#define  RK3588_GRF_EDP0_ENABLE_SHIFT	0
++#define  RK3588_GRF_EDP1_ENABLE_SHIFT	1
++
++/* VP (Video Port) registers, stride 0x100 per VP */
++#define VOP2_VP_DSP_CTRL		0xC00
++#define  OUT_MODE_MASK			0xf
++#define  OUT_MODE_SHIFT			0
++#define  OUT_MODE_S888			0x8
++#define  OUT_MODE_S888_DUMMY		0xc
++#define  DSP_RB_SWAP_SHIFT		20
++#define  CORE_DCLK_DIV_SHIFT		4
++#define  P2I_EN_SHIFT			5
++#define  STANDBY_SHIFT			31
++
++#define VOP2_VP_CLK_CTRL		0xC0C
++#define  DCLK_CORE_DIV_SHIFT		0
++#define  DCLK_OUT_DIV_SHIFT		2
++
++#define VOP2_VP_DSP_BG			0xC2C
++
++#define VOP2_VP_DSP_HTOTAL_HS_END	0xC48
++#define VOP2_VP_DSP_HACT_ST_END		0xC4C
++#define VOP2_VP_DSP_VTOTAL_VS_END	0xC50
++#define VOP2_VP_DSP_VACT_ST_END		0xC54
++
++/* ESMART window registers (simpler than CLUSTER, no AFBC) */
++#define VOP2_ESMART0_CTRL0		0x1800
++#define  WIN_EN_SHIFT			0
++#define  WIN_FORMAT_SHIFT		1
++#define  WIN_FORMAT_XRGB8888		2
++
++#define VOP2_ESMART0_CTRL1		0x1804
++
++#define VOP2_ESMART0_REGION0_CTRL	0x1810
++#define  REGION_EN_SHIFT		0
++
++#define VOP2_ESMART0_REGION0_YRGB_MST	0x1814
++#define VOP2_ESMART0_REGION0_VIR	0x181C
++#define VOP2_ESMART0_REGION0_ACT_INFO	0x1820
++#define VOP2_ESMART0_REGION0_DSP_INFO	0x1824
++#define VOP2_ESMART0_REGION0_DSP_ST	0x1828
++
++/* OVL (Overlay) layer selection */
++#define VOP2_OVL_LAYER_SEL		0x604
++#define  LAYER_SEL_MASK			0xf
++
++/* OVL port mux */
++#define VOP2_OVL_PORT_SEL		0x608
++#define  PORT_MUX_MASK			0xf
++
++/* Per-VP stride */
++#define VP_STRIDE			0x100
++
++/* ESMART stride between windows */
++#define ESMART_STRIDE			0x200
++
++struct rk3588_vop2_priv {
++	void __iomem *regs;
++	struct regmap *vop_grf;
++	struct regmap *vo1_grf;
++	struct regmap *sys_grf;
++};
++
++static inline void vop2_writel(struct rk3588_vop2_priv *priv, u32 offset, u32 val)
++{
++	writel(val, priv->regs + offset);
++}
++
++static inline u32 vop2_readl(struct rk3588_vop2_priv *priv, u32 offset)
++{
++	return readl(priv->regs + offset);
++}
++
++static inline void vop2_clrsetbits(struct rk3588_vop2_priv *priv, u32 offset,
++				    u32 mask, u32 shift, u32 val)
++{
++	u32 reg = vop2_readl(priv, offset);
++
++	reg &= ~(mask << shift);
++	reg |= (val & mask) << shift;
++	vop2_writel(priv, offset, reg);
++}
++
++static void vop2_vp_set_timing(struct rk3588_vop2_priv *priv, int vp_id,
++				const struct display_timing *timing)
++{
++	u32 vp_offset = vp_id * VP_STRIDE;
++	u32 hsync_len = timing->hsync_len.typ;
++	u32 hback_porch = timing->hback_porch.typ;
++	u32 hactive = timing->hactive.typ;
++	u32 hfront_porch = timing->hfront_porch.typ;
++	u32 vsync_len = timing->vsync_len.typ;
++	u32 vback_porch = timing->vback_porch.typ;
++	u32 vactive = timing->vactive.typ;
++	u32 vfront_porch = timing->vfront_porch.typ;
++	u32 htotal = hactive + hfront_porch + hsync_len + hback_porch;
++	u32 vtotal = vactive + vfront_porch + vsync_len + vback_porch;
++	u32 hact_start = htotal - hfront_porch;
++	u32 hact_end = hact_start - hactive;
++	u32 vact_start = vtotal - vfront_porch;
++	u32 vact_end = vact_start - vactive;
++	u32 val;
++
++	/* DSP_CTRL: output mode, no standby */
++	val = vop2_readl(priv, VOP2_VP_DSP_CTRL + vp_offset);
++	val &= ~(OUT_MODE_MASK << OUT_MODE_SHIFT);
++	val |= (OUT_MODE_S888_DUMMY << OUT_MODE_SHIFT);
++	val &= ~BIT(STANDBY_SHIFT);
++	vop2_writel(priv, VOP2_VP_DSP_CTRL + vp_offset, val);
++
++	/* Background color: black */
++	vop2_writel(priv, VOP2_VP_DSP_BG + vp_offset, 0x00000000);
++
++	/* Htotal and Hsync end */
++	val = (htotal << 16) | hsync_len;
++	vop2_writel(priv, VOP2_VP_DSP_HTOTAL_HS_END + vp_offset, val);
++
++	/* Hactive start and end */
++	val = (hact_start << 16) | hact_end;
++	vop2_writel(priv, VOP2_VP_DSP_HACT_ST_END + vp_offset, val);
++
++	/* Vtotal and Vsync end */
++	val = (vtotal << 16) | vsync_len;
++	vop2_writel(priv, VOP2_VP_DSP_VTOTAL_VS_END + vp_offset, val);
++
++	/* Vactive start and end */
++	val = (vact_start << 16) | vact_end;
++	vop2_writel(priv, VOP2_VP_DSP_VACT_ST_END + vp_offset, val);
++}
++
++static void vop2_setup_esmart_win(struct rk3588_vop2_priv *priv,
++				   int esmart_id, ulong fb_addr,
++				   u32 width, u32 height)
++{
++	u32 win_offset = esmart_id * ESMART_STRIDE;
++	u32 stride = width * 4; /* 32bpp XRGB8888 */
++	u32 act_info = ((height - 1) << 16) | (width - 1);
++	u32 dsp_info = act_info;
++
++	/* Enable window with XRGB8888 format */
++	vop2_clrsetbits(priv, VOP2_ESMART0_REGION0_CTRL + win_offset,
++			1, REGION_EN_SHIFT, 1);
++
++	/* Framebuffer address */
++	vop2_writel(priv, VOP2_ESMART0_REGION0_YRGB_MST + win_offset,
++		    (u32)fb_addr);
++
++	/* Virtual stride (in pixels / 4 for 32bpp) */
++	vop2_writel(priv, VOP2_ESMART0_REGION0_VIR + win_offset,
++		    stride >> 2);
++
++	/* Active and display info */
++	vop2_writel(priv, VOP2_ESMART0_REGION0_ACT_INFO + win_offset, act_info);
++	vop2_writel(priv, VOP2_ESMART0_REGION0_DSP_INFO + win_offset, dsp_info);
++	vop2_writel(priv, VOP2_ESMART0_REGION0_DSP_ST + win_offset, 0);
++
++	/* Enable ESMART window, XRGB8888 format */
++	vop2_clrsetbits(priv, VOP2_ESMART0_CTRL0 + win_offset,
++			1, WIN_EN_SHIFT, 1);
++	vop2_clrsetbits(priv, VOP2_ESMART0_CTRL0 + win_offset,
++			0x1f, WIN_FORMAT_SHIFT, WIN_FORMAT_XRGB8888);
++}
++
++static void vop2_cfg_done(struct rk3588_vop2_priv *priv)
++{
++	vop2_writel(priv, VOP2_REG_CFG_DONE, CFG_DONE_EN | 0x003f);
++}
++
++static int vop2_setup_edp_output(struct rk3588_vop2_priv *priv,
++				  int vp_id, int edp_id)
++{
++	/* Enable eDP interface, mux to VP */
++	if (edp_id == 0) {
++		vop2_clrsetbits(priv, VOP2_DSP_IF_EN, 1,
++				RK3588_EDP0_EN_SHIFT, 1);
++		vop2_clrsetbits(priv, VOP2_DSP_IF_EN, IF_MUX_MASK,
++				RK3588_HDMI_EDP0_MUX_SHIFT, vp_id);
++		/* Clock dividers: no division */
++		vop2_clrsetbits(priv, VOP2_DSP_IF_CTRL, 3,
++				HDMI_EDP0_DCLK_DIV_SHIFT, 0);
++		vop2_clrsetbits(priv, VOP2_DSP_IF_CTRL, 3,
++				HDMI_EDP0_PIXCLK_DIV_SHIFT, 0);
++		/* Enable in VOP GRF */
++		if (priv->vop_grf)
++			regmap_write(priv->vop_grf, RK3588_GRF_VOP_CON2,
++				     BIT(RK3588_GRF_EDP0_ENABLE_SHIFT + 16) |
++				     BIT(RK3588_GRF_EDP0_ENABLE_SHIFT));
++	} else {
++		vop2_clrsetbits(priv, VOP2_DSP_IF_EN, 1,
++				RK3588_EDP1_EN_SHIFT, 1);
++		vop2_clrsetbits(priv, VOP2_DSP_IF_EN, IF_MUX_MASK,
++				RK3588_HDMI_EDP1_MUX_SHIFT, vp_id);
++		vop2_clrsetbits(priv, VOP2_DSP_IF_CTRL, 3,
++				HDMI_EDP1_DCLK_DIV_SHIFT, 0);
++		vop2_clrsetbits(priv, VOP2_DSP_IF_CTRL, 3,
++				HDMI_EDP1_PIXCLK_DIV_SHIFT, 0);
++		if (priv->vop_grf)
++			regmap_write(priv->vop_grf, RK3588_GRF_VOP_CON2,
++				     BIT(RK3588_GRF_EDP1_ENABLE_SHIFT + 16) |
++				     BIT(RK3588_GRF_EDP1_ENABLE_SHIFT));
++	}
++
++	/* VP clock control: no core/out division */
++	vop2_clrsetbits(priv, VOP2_VP_CLK_CTRL + vp_id * VP_STRIDE,
++			0x3, DCLK_CORE_DIV_SHIFT, 0);
++	vop2_clrsetbits(priv, VOP2_VP_CLK_CTRL + vp_id * VP_STRIDE,
++			0x3, DCLK_OUT_DIV_SHIFT, 0);
++
++	return 0;
++}
++
++static int vop2_setup_hdmi_output(struct rk3588_vop2_priv *priv,
++				   int vp_id, int hdmi_id)
++{
++	if (hdmi_id == 0) {
++		vop2_clrsetbits(priv, VOP2_DSP_IF_EN, 1,
++				RK3588_HDMI0_EN_SHIFT, 1);
++		vop2_clrsetbits(priv, VOP2_DSP_IF_EN, IF_MUX_MASK,
++				RK3588_HDMI_EDP0_MUX_SHIFT, vp_id);
++		vop2_clrsetbits(priv, VOP2_DSP_IF_CTRL, 3,
++				HDMI_EDP0_DCLK_DIV_SHIFT, 0);
++		vop2_clrsetbits(priv, VOP2_DSP_IF_CTRL, 3,
++				HDMI_EDP0_PIXCLK_DIV_SHIFT, 0);
++	} else {
++		vop2_clrsetbits(priv, VOP2_DSP_IF_EN, 1,
++				RK3588_HDMI1_EN_SHIFT, 1);
++		vop2_clrsetbits(priv, VOP2_DSP_IF_EN, IF_MUX_MASK,
++				RK3588_HDMI_EDP1_MUX_SHIFT, vp_id);
++		vop2_clrsetbits(priv, VOP2_DSP_IF_CTRL, 3,
++				HDMI_EDP1_DCLK_DIV_SHIFT, 0);
++		vop2_clrsetbits(priv, VOP2_DSP_IF_CTRL, 3,
++				HDMI_EDP1_PIXCLK_DIV_SHIFT, 0);
++	}
++
++	vop2_clrsetbits(priv, VOP2_VP_CLK_CTRL + vp_id * VP_STRIDE,
++			0x3, DCLK_CORE_DIV_SHIFT, 0);
++	vop2_clrsetbits(priv, VOP2_VP_CLK_CTRL + vp_id * VP_STRIDE,
++			0x3, DCLK_OUT_DIV_SHIFT, 0);
++
++	return 0;
++}
++
++/*
++ * Walk the VOP2 port subnodes to find an active display device.
++ * For each video port (VP0-VP3), check its endpoints for a connected
++ * display device (eDP or HDMI).
++ */
++static int rk3588_vop2_display_init(struct udevice *dev, ulong fbbase)
++{
++	struct rk3588_vop2_priv *priv = dev_get_priv(dev);
++	struct video_priv *uc_priv = dev_get_uclass_priv(dev);
++	struct display_timing timing;
++	struct udevice *disp;
++	struct display_plat *disp_uc_plat;
++	struct clk dclk;
++	ofnode ports, port, ep;
++	u32 remote_phandle;
++	ofnode remote;
++	const char *compat;
++	int vp_id, ret;
++	int edp_id = -1, hdmi_id = -1;
++
++	ports = dev_read_subnode(dev, "ports");
++	if (!ofnode_valid(ports))
++		ports = dev_read_subnode(dev, "port");
++
++	/* Iterate through VP ports */
++	ofnode_for_each_subnode(port, ports) {
++		vp_id = ofnode_read_u32_default(port, "reg", -1);
++		if (vp_id < 0)
++			continue;
++
++		/* Iterate through endpoints in this VP */
++		ofnode_for_each_subnode(ep, port) {
++			ret = ofnode_read_u32(ep, "remote-endpoint",
++					     &remote_phandle);
++			if (ret)
++				continue;
++
++			remote = ofnode_get_by_phandle(remote_phandle);
++			if (!ofnode_valid(remote))
++				continue;
++
++			/* Walk up to find the display device */
++			disp = NULL;
++			{
++				ofnode node = remote;
++
++				while (ofnode_valid(node)) {
++					node = ofnode_get_parent(node);
++					if (!ofnode_valid(node))
++						break;
++					uclass_find_device_by_ofnode(
++						UCLASS_DISPLAY, node, &disp);
++					if (disp)
++						break;
++				}
++			}
++			if (!disp)
++				continue;
++
++			compat = ofnode_get_property(
++				dev_ofnode(disp), "compatible", NULL);
++			if (!compat)
++				continue;
++
++			if (strstr(compat, "edp")) {
++				/* Determine eDP ID from address */
++				fdt_addr_t addr = dev_read_addr(disp);
++
++				edp_id = (addr == 0xfded0000) ? 1 : 0;
++			} else if (strstr(compat, "hdmi")) {
++				fdt_addr_t addr = dev_read_addr(disp);
++
++				hdmi_id = (addr == 0xfde90000) ? 1 : 0;
++			} else {
++				continue;
++			}
++
++			/* Found a display — set it up */
++			disp_uc_plat = dev_get_uclass_plat(disp);
++			if (display_in_use(disp))
++				continue;
++
++			disp_uc_plat->source_id = vp_id;
++			disp_uc_plat->src_dev = dev;
++
++			ret = device_probe(disp);
++			if (ret) {
++				debug("VOP2: display '%s' probe failed: %d\n",
++				      disp->name, ret);
++				continue;
++			}
++
++			ret = display_read_timing(disp, &timing);
++			if (ret) {
++				debug("VOP2: timing read failed: %d\n", ret);
++				continue;
++			}
++
++			/* Set pixel clock via DCLK for this VP */
++			ret = clk_get_by_index(dev, 2 + vp_id, &dclk);
++			if (!ret)
++				ret = clk_set_rate(&dclk,
++						   timing.pixelclock.typ);
++			if (IS_ERR_VALUE(ret)) {
++				debug("VOP2: set pixel clk failed: %d\n", ret);
++				continue;
++			}
++
++			/* Configure output interface */
++			if (edp_id >= 0)
++				vop2_setup_edp_output(priv, vp_id, edp_id);
++			else if (hdmi_id >= 0)
++				vop2_setup_hdmi_output(priv, vp_id, hdmi_id);
++
++			/* Set up VP timing */
++			vop2_vp_set_timing(priv, vp_id, &timing);
++
++			/* Configure ESMART window for framebuffer */
++			vop2_setup_esmart_win(priv, 0, fbbase,
++					      timing.hactive.typ,
++					      timing.vactive.typ);
++
++			/* Commit configuration */
++			vop2_cfg_done(priv);
++
++			/* Enable display */
++			ret = display_enable(disp, 32, &timing);
++			if (ret) {
++				debug("VOP2: display enable failed: %d\n", ret);
++				continue;
++			}
++
++			uc_priv->xsize = timing.hactive.typ;
++			uc_priv->ysize = timing.vactive.typ;
++			uc_priv->bpix = VIDEO_BPP32;
++
++			debug("VOP2: fb=%lx, %dx%d via VP%d\n",
++			      fbbase, uc_priv->xsize, uc_priv->ysize, vp_id);
++
++			return 0;
++		}
++	}
++
++	return -ENODEV;
++}
++
++static int rk3588_vop2_probe(struct udevice *dev)
++{
++	struct video_uc_plat *plat = dev_get_uclass_plat(dev);
++	struct rk3588_vop2_priv *priv = dev_get_priv(dev);
++	struct udevice *syscon;
++	int ret;
++
++	/* Before relocation we don't need to do anything */
++	if (!(gd->flags & GD_FLG_RELOC))
++		return 0;
++
++	priv->regs = dev_read_addr_ptr(dev);
++	if (!priv->regs)
++		return -EINVAL;
++
++	/* Get GRF regmaps */
++	ret = uclass_get_device_by_phandle(UCLASS_SYSCON, dev,
++					   "rockchip,vop-grf", &syscon);
++	if (!ret)
++		priv->vop_grf = syscon_get_regmap(syscon);
++
++	ret = uclass_get_device_by_phandle(UCLASS_SYSCON, dev,
++					   "rockchip,vo1-grf", &syscon);
++	if (!ret)
++		priv->vo1_grf = syscon_get_regmap(syscon);
++
++	ret = uclass_get_device_by_phandle(UCLASS_SYSCON, dev,
++					   "rockchip,grf", &syscon);
++	if (!ret)
++		priv->sys_grf = syscon_get_regmap(syscon);
++
++	(void)plat;
++
++	ret = rk3588_vop2_display_init(dev, plat->base);
++	if (ret)
++		debug("VOP2: display init returned %d\n", ret);
++
++	video_set_flush_dcache(dev, 1);
++
++	return ret;
++}
++
++static int rk3588_vop2_bind(struct udevice *dev)
++{
++	struct video_uc_plat *plat = dev_get_uclass_plat(dev);
++
++	plat->size = 4 * (CONFIG_VIDEO_ROCKCHIP_MAX_XRES *
++			  CONFIG_VIDEO_ROCKCHIP_MAX_YRES);
++
++	return 0;
++}
++
++static const struct udevice_id rk3588_vop2_ids[] = {
++	{ .compatible = "rockchip,rk3588-vop" },
++	{ }
++};
++
++static const struct video_ops rk3588_vop2_ops = {
++};
++
++U_BOOT_DRIVER(rk3588_vop2) = {
++	.name		= "rk3588_vop2",
++	.id		= UCLASS_VIDEO,
++	.of_match	= rk3588_vop2_ids,
++	.ops		= &rk3588_vop2_ops,
++	.bind		= rk3588_vop2_bind,
++	.probe		= rk3588_vop2_probe,
++	.priv_auto	= sizeof(struct rk3588_vop2_priv),
++};
+diff --git a/drivers/video/rockchip/Kconfig b/drivers/video/rockchip/Kconfig
+index 96af6d28ef0..dd934915d8d 100644
+--- a/drivers/video/rockchip/Kconfig
++++ b/drivers/video/rockchip/Kconfig
+@@ -40,6 +40,13 @@ config VIDEO_ROCKCHIP_MAX_YRES
+ 	  This configuration is used for reserving/allocating memory for the
+ 	  framebuffer during device-model binding/probing.
+ 
++config VIDEO_ROCKCHIP_VOP2
++	bool "Enable RK3588 VOP2 display controller"
++	depends on VIDEO_ROCKCHIP && ROCKCHIP_RK3588
++	help
++	  Enable the RK3588 VOP2 (Video Output Processor v2) display
++	  controller. This supports eDP and HDMI output for boot display.
++
+ if VIDEO_ROCKCHIP
+ 
+ config DISPLAY_ROCKCHIP_EDP
+diff --git a/drivers/video/rockchip/Makefile b/drivers/video/rockchip/Makefile
+index f55beceebf1..bac11604111 100644
+--- a/drivers/video/rockchip/Makefile
++++ b/drivers/video/rockchip/Makefile
+@@ -4,10 +4,13 @@
+ # Wolfgang Denk, DENX Software Engineering, wd@denx.de.
+ 
+ ifdef CONFIG_VIDEO_ROCKCHIP
++ifndef CONFIG_VIDEO_ROCKCHIP_VOP2
+ obj-y += rk_vop.o
++endif
+ obj-$(CONFIG_ROCKCHIP_RK3288) += rk3288_vop.o
+ obj-$(CONFIG_ROCKCHIP_RK3328) += rk3328_vop.o
+ obj-$(CONFIG_ROCKCHIP_RK3399) += rk3399_vop.o
++obj-$(CONFIG_VIDEO_ROCKCHIP_VOP2) += rk3588_vop2.o
+ obj-$(CONFIG_DISPLAY_ROCKCHIP_EDP) += rk_edp.o
+ obj-$(CONFIG_DISPLAY_ROCKCHIP_LVDS) += rk_lvds.o
+ obj-hdmi-$(CONFIG_ROCKCHIP_RK3288) += rk3288_hdmi.o
