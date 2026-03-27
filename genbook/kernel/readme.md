@@ -1,6 +1,6 @@
 # GenBook Kernel Patches
 
-Linux kernel patches for the CoolPi CM5 GenBook (RK3588).
+Linux kernel patches for the CoolPi CM5 GenBook (RK3588). These patches apply cleanly to **linux-6.19.9** using `git apply`.
 
 ## Patches
 
