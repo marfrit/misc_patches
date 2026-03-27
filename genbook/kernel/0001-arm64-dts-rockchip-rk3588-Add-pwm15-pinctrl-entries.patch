@@ -8,7 +8,6 @@ controller (m0-m3) to rk3588-extra-pinctrl.dtsi, marked with
 Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
 Signed-off-by: Markus Fritsche <mfritsche@reauktion.de>
 ---
- arch/arm64/boot/dts/rockchip/rk3588-extra-pinctrl.dtsi | 30 ++++++++++++++++
  1 file changed, 30 insertions(+)
 
 --- a/arch/arm64/boot/dts/rockchip/rk3588-extra-pinctrl.dtsi
@@ -16,7 +15,7 @@ Signed-off-by: Markus Fritsche <mfritsche@reauktion.de>
 @@ -342,6 +342,36 @@
  		};
  	};
-
+ 
 +	pwm15 {
 +		/omit-if-no-ref/
 +		pwm15m0_pins: pwm15m0-pins {
@@ -50,3 +49,4 @@ Signed-off-by: Markus Fritsche <mfritsche@reauktion.de>
  	sdio {
  		/omit-if-no-ref/
  		sdiom0_pins: sdiom0-pins {
+

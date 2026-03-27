@@ -54,16 +54,15 @@ ARM Trusted Firmware (TF-A) for RK3588 does.
 Generated-by: Claude Opus 4.6 <noreply@anthropic.com>
 Signed-off-by: Markus Fritsche <mfritsche@localhost>
 ---
- drivers/gpio/gpio-rockchip.c                                | 17 ++++++++++++++++-
- drivers/gpu/drm/bridge/analogix/analogix_dp_core.c          |  5 +++++
- drivers/input/misc/rk805-pwrkey.c                           |  5 +++++
- drivers/mfd/rk8xx-spi.c                                     |  8 ++++++++
- arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts  |  5 +++++
- 5 files changed, 39 insertions(+), 1 deletion(-)
+
+ 5 files changed, 43 insertions(+), 1 deletion(-)
 
 --- a/drivers/gpio/gpio-rockchip.c
 +++ b/drivers/gpio/gpio-rockchip.c
-@@ -486,6 +486,22 @@
+@@ -483,6 +483,23 @@
+ 	gpiochip_relres_irq(&bank->gpio_chip, d->hwirq);
+ }
+ 
 +static int rockchip_irq_set_wake(struct irq_data *d, unsigned int on)
 +{
 +	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
@@ -82,64 +81,76 @@ Signed-off-by: Markus Fritsche <mfritsche@localhost>
 +}
 +
  static void rockchip_irq_suspend(struct irq_data *d)
-@@ -553,7 +569,7 @@
+ {
+ 	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
+@@ -550,7 +567,7 @@
+ 	gc->chip_types[0].chip.irq_unmask = irq_gc_mask_clr_bit;
+ 	gc->chip_types[0].chip.irq_enable = rockchip_irq_enable;
+ 	gc->chip_types[0].chip.irq_disable = rockchip_irq_disable;
 -	gc->chip_types[0].chip.irq_set_wake = irq_gc_set_wake;
 +	gc->chip_types[0].chip.irq_set_wake = rockchip_irq_set_wake;
  	gc->chip_types[0].chip.irq_suspend = rockchip_irq_suspend;
+ 	gc->chip_types[0].chip.irq_resume = rockchip_irq_resume;
+ 	gc->chip_types[0].chip.irq_set_type = rockchip_irq_set_type;
 
 --- a/drivers/gpu/drm/bridge/analogix/analogix_dp_core.c
 +++ b/drivers/gpu/drm/bridge/analogix/analogix_dp_core.c
-@@ -1578,6 +1578,8 @@ EXPORT_SYMBOL_GPL(analogix_dp_probe);
+@@ -1577,6 +1577,8 @@
+ 
  int analogix_dp_suspend(struct analogix_dp_device *dp)
  {
 +	disable_irq(dp->irq);
 +
  	phy_power_off(dp->phy);
-
+ 
  	if (dp->plat_data->power_off)
-@@ -1597,7 +1599,8 @@ int analogix_dp_resume(struct analogix_dp_device *dp)
+@@ -1595,6 +1597,7 @@
  	ret = clk_prepare_enable(dp->clock);
  	if (ret < 0) {
  		DRM_ERROR("Failed to prepare_enable the clock clk [%d]\n", ret);
--		return ret;
 +		enable_irq(dp->irq);
-+		return ret;
+ 		return ret;
  	}
-
- 	if (dp->plat_data->power_on)
-@@ -1609,6 +1612,8 @@ int analogix_dp_resume(struct analogix_dp_device *dp)
+ 
+@@ -1606,6 +1609,8 @@
+ 
  	analogix_dp_init_dp(dp);
-
+ 
 +	enable_irq(dp->irq);
 +
  	return 0;
  }
+ EXPORT_SYMBOL_GPL(analogix_dp_resume);
 
 --- a/drivers/input/misc/rk805-pwrkey.c
 +++ b/drivers/input/misc/rk805-pwrkey.c
-@@ -15,6 +15,7 @@
+@@ -14,6 +14,7 @@
  #include <linux/kernel.h>
  #include <linux/module.h>
  #include <linux/platform_device.h>
 +#include <linux/pm_wakeirq.h>
-
+ 
  static irqreturn_t pwrkey_fall_irq(int irq, void *_pwr)
  {
-@@ -87,6 +88,10 @@ static int rk805_pwrkey_probe(struct platform_device *pdev)
+@@ -87,6 +88,11 @@
  	platform_set_drvdata(pdev, pwr);
  	device_init_wakeup(&pdev->dev, true);
-
+ 
 +	err = dev_pm_set_wake_irq(&pdev->dev, fall_irq);
 +	if (err)
 +		dev_warn(&pdev->dev, "Can't set wake IRQ %d: %d\n",
 +			 fall_irq, err);
++
  	return 0;
  }
+ 
 
 --- a/drivers/mfd/rk8xx-spi.c
 +++ b/drivers/mfd/rk8xx-spi.c
-@@ -110,10 +110,18 @@ MODULE_DEVICE_TABLE(spi, rk8xx_spi_id_table);
-
+@@ -109,12 +109,21 @@
+ };
+ MODULE_DEVICE_TABLE(spi, rk8xx_spi_id_table);
+ 
 +static void rk8xx_spi_shutdown(struct spi_device *spi)
 +{
 +	rk8xx_shutdown(&spi->dev);
@@ -157,18 +168,27 @@ Signed-off-by: Markus Fritsche <mfritsche@localhost>
 +	.shutdown	= rk8xx_spi_shutdown,
  	.id_table	= rk8xx_spi_id_table,
  };
+ module_spi_driver(rk8xx_spi_driver);
 
 --- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
 +++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
-@@ -342,8 +342,13 @@
+@@ -340,6 +340,7 @@
+ 		interrupt-parent = <&gpio1>;
  		interrupts = <RK_PD6 IRQ_TYPE_LEVEL_LOW>;
  		hid-descr-addr = <0x0020>;
 +		wakeup-source;
  	};
  };
-
+ 
+@@ -455,6 +456,10 @@
+ 	};
+ };
+ 
 +&pd_npu {
 +	domain-supply = <&vdd_npu_s0>;
 +};
 +
  &pwm6 {
+ 	pinctrl-0 = <&pwm6m1_pins>;
+ 	status = "okay";
+

@@ -58,20 +58,19 @@ DAPM / power flow:
 Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
 Signed-off-by: Markus Fritsche <mfritsche@localhost>
 ---
- .../boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts | 109 +++++++++++++++---
- 1 file changed, 95 insertions(+), 14 deletions(-)
+ 1 file changed, 106 insertions(+), 6 deletions(-)
 
 --- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
 +++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
-@@ -9,6 +9,7 @@
- /dts-v1/;
-
+@@ -8,6 +8,7 @@
+ 
  #include <dt-bindings/leds/common.h>
  #include <dt-bindings/soc/rockchip,vop2.h>
 +#include <dt-bindings/usb/pd.h>
  #include "rk3588-coolpi-cm5.dtsi"
-
-@@ -143,6 +143,20 @@
+ 
+ / {
+@@ -153,6 +154,18 @@
  		pinctrl-0 = <&usb_host_pwren>;
  		vin-supply = <&vcc5v0_usb>;
  	};
@@ -88,9 +87,9 @@ Signed-off-by: Markus Fritsche <mfritsche@localhost>
 +		vin-supply = <&vcc5v0_sys>;
 +	};
  };
-
-@@ -238,6 +252,60 @@
- 		cellwise,monitor-interval-ms = <3000>;
+ 
+ &edp1 {
+@@ -239,6 +252,65 @@
  		monitored-battery = <&battery>;
  		power-supplies = <&charger>;
  	};
@@ -154,15 +153,41 @@ Signed-off-by: Markus Fritsche <mfritsche@localhost>
 +		};
 +	};
  };
-
-@@ -389,7 +457,21 @@
--&usbdp_phy0 {
--	status = "okay";
--};
-+&usbdp_phy0 {
+ 
+ &i2c5 {
+@@ -323,15 +395,21 @@
+ 			rockchip,pins = <1 RK_PD5 RK_FUNC_GPIO &pcfg_pull_up>;
+ 		};
+ 
+-		usb_otg_pwren: usb-otg-pwren {
+-			rockchip,pins = <0 RK_PA0 RK_FUNC_GPIO &pcfg_pull_up>;
+-		};
+-
+ 		usb_host_pwren: usb-host-pwren {
+ 			rockchip,pins = <1 RK_PA7 RK_FUNC_GPIO &pcfg_pull_up>;
+ 		};
+ 	};
+ 
++	usb-typec {
++		usbc0_int: usbc0-int {
++			rockchip,pins = <0 RK_PD5 RK_FUNC_GPIO &pcfg_pull_up>;
++		};
++
++		typec5v_pwren: typec5v-pwren {
++			rockchip,pins = <0 RK_PA0 RK_FUNC_GPIO &pcfg_pull_down>;
++		};
++	};
++
+ 	wifi {
+ 		bt_pwron: bt-pwron {
+ 			rockchip,pins = <3 RK_PA6 RK_FUNC_GPIO &pcfg_pull_up>;
+@@ -387,7 +465,24 @@
+ };
+ 
+ &usbdp_phy0 {
 +	mode-switch;
 +	orientation-switch;
-+	status = "okay";
+ 	status = "okay";
 +
 +	port {
 +		#address-cells = <1>;
@@ -178,47 +203,24 @@ Signed-off-by: Markus Fritsche <mfritsche@localhost>
 +			remote-endpoint = <&usbc0_sbu>;
 +		};
 +	};
-+};
-
-@@ -432,11 +514,15 @@
+ };
+ 
+ &u2phy1 {
+@@ -431,9 +526,14 @@
+ 
  /* Type C port */
--&usb_host0_xhci {
+ &usb_host0_xhci {
 -	dr_mode = "peripheral";
 -	maximum-speed = "high-speed";
--	status = "okay";
--};
-+&usb_host0_xhci {
 +	usb-role-switch;
-+	status = "okay";
+ 	status = "okay";
 +
 +	port {
 +		usb_host0_xhci_to_usbc0: endpoint {
 +			remote-endpoint = <&usbc0_hs>;
 +		};
 +	};
-+};
+ };
+ 
+ /* connected to a HUB for camera and BT */
 
-@@ -321,19 +543,24 @@
- 	usb {
- 		usb_pwren: usb-pwren {
- 			rockchip,pins = <1 RK_PD5 RK_FUNC_GPIO &pcfg_pull_up>;
- 		};
-
--		usb_otg_pwren: usb-otg-pwren {
--			rockchip,pins = <0 RK_PA0 RK_FUNC_GPIO &pcfg_pull_up>;
--		};
--
- 		usb_host_pwren: usb-host-pwren {
- 			rockchip,pins = <1 RK_PA7 RK_FUNC_GPIO &pcfg_pull_up>;
- 		};
- 	};
-+
-+	usb-typec {
-+		usbc0_int: usbc0-int {
-+			rockchip,pins = <0 RK_PD5 RK_FUNC_GPIO &pcfg_pull_up>;
-+		};
-+
-+		typec5v_pwren: typec5v-pwren {
-+			rockchip,pins = <0 RK_PA0 RK_FUNC_GPIO &pcfg_pull_down>;
-+		};
-+	};

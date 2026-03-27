@@ -25,13 +25,13 @@ initialization.
 Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
 Signed-off-by: Markus Fritsche <mfritsche@localhost>
 ---
- drivers/bluetooth/btrtl.c | 8 +++++---
- 1 file changed, 5 insertions(+), 3 deletions(-)
+ 1 file changed, 6 insertions(+), 4 deletions(-)
 
 --- a/drivers/bluetooth/btrtl.c
 +++ b/drivers/bluetooth/btrtl.c
-@@ -1188,9 +1188,11 @@ check_version:
-
+@@ -1186,10 +1186,12 @@
+ 	}
+ 
  	rc = btrtl_vendor_read_reg16(hdev, RTL_SEC_PROJ, reg_val);
 -	if (rc < 0)
 -		goto err_free;
@@ -45,3 +45,5 @@ Signed-off-by: Markus Fritsche <mfritsche@localhost>
 +	}
  	btrtl_dev->key_id = key_id;
  	rtl_dev_info(hdev, "%s: key id %u", __func__, key_id);
+ 
+

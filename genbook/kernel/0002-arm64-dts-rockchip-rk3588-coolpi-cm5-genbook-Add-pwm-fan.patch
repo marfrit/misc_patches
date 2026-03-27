@@ -9,15 +9,14 @@ zone with two trip points at 55 °C and 65 °C.
 Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
 Signed-off-by: Markus Fritsche <mfritsche@reauktion.de>
 ---
- arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts | 45 +++++++++++++
- 1 file changed, 45 insertions(+)
+ 1 file changed, 43 insertions(+)
 
 --- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
 +++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
 @@ -23,6 +23,13 @@
  		pwms = <&pwm6 0 25000 0>;
  	};
-
+ 
 +	fan: pwm-fan {
 +		compatible = "pwm-fan";
 +		#cooling-cells = <2>;
@@ -68,3 +67,4 @@ Signed-off-by: Markus Fritsche <mfritsche@reauktion.de>
 +	pinctrl-0 = <&pwm15m3_pins>;
 +	status = "okay";
 +};
+

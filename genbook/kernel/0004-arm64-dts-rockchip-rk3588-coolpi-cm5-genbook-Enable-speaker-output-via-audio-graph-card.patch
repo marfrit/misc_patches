@@ -53,22 +53,14 @@ A separate patch to alsa-ucm-conf adds the missing Speaker device.
 Generated-by: Claude Sonnet 4.6 <noreply@anthropic.com>
 Signed-off-by: Markus Fritsche <mfritsche@reauktion.de>
 ---
- .../boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts  | 25 ++++++++++++++
- .../boot/dts/rockchip/rk3588-coolpi-cm5.dtsi         |  2 +-
- 2 files changed, 26 insertions(+), 1 deletion(-)
-
---- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5.dtsi
-+++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5.dtsi
-@@ -24,7 +24,7 @@
- 	analog-sound {
-+	analog_sound: analog-sound {
- 		compatible = "audio-graph-card";
- 		dais = <&i2s0_8ch_p0>;
- 		label = "rk3588-es8316";
+ 2 files changed, 25 insertions(+), 1 deletion(-)
 
 --- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
 +++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
-@@ -286,6 +286,30 @@
+@@ -283,7 +283,31 @@
+ 	status = "okay";
+ };
+ 
 +&analog_sound {
 +	pa-gpios = <&gpio1 RK_PA6 GPIO_ACTIVE_HIGH>;
 +	hp-det-gpios = <&gpio1 RK_PB5 GPIO_ACTIVE_HIGH>;
@@ -95,3 +87,18 @@ Signed-off-by: Markus Fritsche <mfritsche@reauktion.de>
 +	};
 +
  	lcd {
+ 		lcdpwr_en: lcdpwr-en {
+ 			rockchip,pins = <0 RK_PC4 RK_FUNC_GPIO &pcfg_pull_down>;
+
+--- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5.dtsi
++++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5.dtsi
+@@ -21,7 +21,7 @@
+ 		serial2 = &uart2;
+ 	};
+ 
+-	analog-sound {
++	analog_sound: analog-sound {
+ 		compatible = "audio-graph-card";
+ 		dais = <&i2s0_8ch_p0>;
+ 		label = "rk3588-es8316";
+
