@@ -1,0 +1,164 @@
+From: Claude Code <noreply@anthropic.com>
+Subject: [PATCH] video: rockchip: Fix eDP boot hang - enable power domain and PHY clocks
+
+The RK3588 VOP2, eDP controller, and HDPTX PHY all sit in the pd_vo1
+power domain which is OFF by default at boot. Without explicitly enabling
+the power domain before any register access, the AXI bus hangs immediately,
+causing a complete boot freeze with no serial output.
+
+Additionally:
+- HDPTX PHY probe must enable reference and APB clocks
+- HDPTX PHY power_on must abort (not continue) on poll timeout
+- DTS overlay must set edp1 status = "okay"
+
+Fixes the "U-Boot hangs during initialization with no serial output"
+reported in the GenBook U-Boot patches.
+
+Signed-off-by: Claude Code <noreply@anthropic.com>
+---
+ drivers/phy/rockchip/phy-rockchip-samsung-hdptx.c | 42 +++++++++++++++++++--
+ drivers/video/rockchip/rk3588_vop2.c              | 16 ++++++++
+ arch/arm/dts/rk3588-coolpi-cm5-genbook-u-boot.dtsi|  4 ++
+ 3 files changed, 59 insertions(+), 3 deletions(-)
+
+--- a/drivers/video/rockchip/rk3588_vop2.c
++++ b/drivers/video/rockchip/rk3588_vop2.c
+@@ -9,6 +9,7 @@
+ #include <clk.h>
+ #include <display.h>
+ #include <dm.h>
++#include <power-domain.h>
+ #include <dm/device_compat.h>
+ #include <dm/device-internal.h>
+ #include <dm/uclass-internal.h>
+@@ -502,9 +503,24 @@
+ static int rk3588_vop2_probe(struct udevice *dev)
+ {
+ 	struct video_uc_plat *plat = dev_get_uclass_plat(dev);
+ 	struct rk3588_vop2_priv *priv = dev_get_priv(dev);
+ 	struct udevice *syscon;
++	struct power_domain pd;
+ 	int ret;
+ 
+ 	/* Before relocation we don't need to do anything */
+ 	if (!(gd->flags & GD_FLG_RELOC))
+ 		return 0;
++
++	/* CRITICAL: Enable VOP power domain BEFORE any register access.
++	 * The VOP2, eDP, and HDPTX PHY are in pd_vo1 which is OFF at boot.
++	 * Accessing registers in a powered-off domain hangs the AXI bus. */
++	ret = power_domain_get(dev, &pd);
++	if (ret) {
++		debug("VOP2: no power domain (ret=%d), assuming always-on\n", ret);
++	} else {
++		ret = power_domain_on(&pd);
++		if (ret) {
++			dev_err(dev, "failed to enable power domain: %d\n", ret);
++			return ret;
++		}
++		debug("VOP2: power domain enabled\n");
++	}
+ 
+ 	priv->regs = dev_read_addr_ptr(dev);
+
+--- a/drivers/phy/rockchip/phy-rockchip-samsung-hdptx.c
++++ b/drivers/phy/rockchip/phy-rockchip-samsung-hdptx.c
+@@ -10,6 +10,7 @@
+ #include <clk.h>
+ #include <dm.h>
+ #include <dm/device_compat.h>
++#include <power-domain.h>
+ #include <generic-phy.h>
+ #include <phy-dp.h>
+ #include <regmap.h>
+@@ -547,7 +548,7 @@
+ 	ret = regmap_read_poll_timeout(hdptx->grf, HDPTXPHY_GRF_STATUS0,
+ 				       status, FIELD_GET(PHY_RDY, status),
+ 				       50, 5000);
+ 	if (ret) {
+ 		dev_err(hdptx->dev, "timeout waiting for phy_rdy\n");
+-		/* continue anyway */
++		return ret;  /* ABORT: continuing with unready PHY will hang */
+ 	}
+
+@@ -697,7 +698,7 @@
+ 	ret = regmap_read_poll_timeout(hdptx->grf, HDPTXPHY_GRF_STATUS0,
+ 				       status, FIELD_GET(PLL_LOCK_DONE, status),
+ 				       50, 1000);
+ 	if (ret) {
+ 		dev_err(hdptx->dev, "timeout waiting for pll_lock_done\n");
+-		/* continue anyway */
++		return ret;  /* ABORT: PLL not locked, all timings will be wrong */
+ 	}
+
+@@ -946,7 +947,7 @@
+ 	ret = regmap_read_poll_timeout(hdptx->grf, HDPTXPHY_GRF_STATUS0,
+ 				       status, FIELD_GET(SB_RDY, status),
+ 				       50, 1000);
+ 	if (ret) {
+ 		dev_err(hdptx->dev, "timeout waiting for sb_rdy\n");
+-		/* continue anyway */
++		return ret;  /* ABORT: sideband not ready */
+ 	}
+
+@@ -1043,6 +1044,8 @@
+ static int rockchip_hdptx_phy_probe(struct udevice *dev)
+ {
+ 	struct rockchip_hdptx_phy *hdptx = dev_get_priv(dev);
+ 	struct udevice *syscon;
++	struct power_domain pd;
++	struct clk ref_clk, apb_clk;
+ 	int ret;
+ 
++	/* Enable power domain for PHY */
++	ret = power_domain_get(dev, &pd);
++	if (!ret) {
++		ret = power_domain_on(&pd);
++		if (ret)
++			dev_warn(dev, "failed to enable power domain: %d\n", ret);
++	}
++
+ 	ret = regmap_init_mem(dev_ofnode(dev), &hdptx->regmap);
+ 	if (ret)
+ 		return ret;
+@@ -1086,6 +1089,20 @@
+ 		return ret;
+ 	}
+ 
++	/* Enable clocks */
++	ret = clk_get_by_name(dev, "ref", &ref_clk);
++	if (!ret) {
++		clk_enable(&ref_clk);
++		debug("hdptx: ref clk enabled\n");
++	}
++
++	ret = clk_get_by_name(dev, "apb", &apb_clk);
++	if (!ret) {
++		clk_enable(&apb_clk);
++		debug("hdptx: apb clk enabled\n");
++	}
++
+ 	return 0;
+ }
+
+--- a/arch/arm/dts/rk3588-coolpi-cm5-genbook-u-boot.dtsi
++++ b/arch/arm/dts/rk3588-coolpi-cm5-genbook-u-boot.dtsi
+@@ -21,6 +21,7 @@
+ 
+ /* eDP display pipeline */
+ &edp1 {
++	status = "okay";
+ 	rockchip,panel = <&edp_panel>;
+ 
+ 	aux-bus {
+@@ -33,6 +34,9 @@
+ &hdptxphy1 {
+ 	status = "okay";
++	/* U-Boot needs explicit boot tagging for early probe */
++	bootph-all;
+ };
+ 
+ &vop {
+ 	status = "okay";
++	bootph-all;
+ };

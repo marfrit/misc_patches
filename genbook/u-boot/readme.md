@@ -56,6 +56,10 @@ VOP2 VP2 -> eDP1 controller -> HDPTX PHY1 -> panel
 - **Internal keyboard** via HID-over-I2C (I2C5, address 0x2c, HID descriptor at 0x0020)
 - **External USB keyboard** via `CONFIG_USB_KEYBOARD`
 
+## Fix Patch (untested)
+
+-  - Fix eDP boot hang: enable pd_vo1 power domain in VOP2 and HDPTX PHY probe, enable PHY ref/apb clocks, abort on poll timeout, add missing DTS status and bootph tags. **Analysis-only — NOT YET TESTED on hardware.** Created by analyzing the probe sequence; the root cause is almost certainly the missing power domain enable.
+
 ## Next Steps
 
 - Obtain a 3.3V USB-to-serial adapter supporting 1.5Mbaud
