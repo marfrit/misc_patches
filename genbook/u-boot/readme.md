@@ -58,7 +58,7 @@ VOP2 VP2 -> eDP1 controller -> HDPTX PHY1 -> panel
 
 ## Fix Patch (untested)
 
--  - Fix eDP boot hang: enable pd_vo1 power domain in VOP2 and HDPTX PHY probe, enable PHY ref/apb clocks, abort on poll timeout, add missing DTS status and bootph tags. **Analysis-only — NOT YET TESTED on hardware.** Created by analyzing the probe sequence; the root cause is almost certainly the missing power domain enable.
+-  - Fix eDP boot hang: enable pd_vo1 power domain in VOP2 and HDPTX PHY probe, enable PHY ref/apb clocks, abort on poll timeout, add missing DTS status and bootph tags. **Analysis + OEM DTS comparison — NOT YET TESTED. Now includes force-hpd, power domains for all nodes, VOP clock parent from OEM.** Created by analyzing the probe sequence; the root cause is almost certainly the missing power domain enable.
 
 ## Next Steps
 
