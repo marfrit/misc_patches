@@ -1,0 +1,66 @@
+From dd545fa1532921fe9c63360a99c35f60e981aad2 Mon Sep 17 00:00:00 2001
+From: Markus Fritsche <mfritsche@reauktion.de>
+Date: Sun, 17 May 2026 23:18:30 +0200
+Subject: [PATCH] arm64: dts: rockchip: rk3588-coolpi-cm5-genbook: wire
+ internal microphone
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The CoolPi CM5 GenBook has an internal microphone wired to the ES8316
+codec MIC1 input. The upstream DTS only declared Mic Jack on MIC2
+(headset jack), so the DAPM graph has no path between MIC1 and a
+named widget — internal mic capture cannot work regardless of mixer
+settings.
+
+Vendor coolpi-kernel reference (rk3588-cpcm5-genbook.dts):
+	rockchip,audio-routing =
+		"MIC1", "Main Mic",
+		"MIC2", "Headset Mic";
+
+Mirror in the upstream audio-graph-card binding:
+  - widgets: split Mic Jack into Main Mic (internal) + Headset Mic
+    (external) so each input is addressable from ALSA UCM
+  - routing: MIC1 <- Main Mic, MIC2 <- Headset Mic
+
+This patch is necessary but not sufficient for working internal mic
+capture: a separate issue prevents the ES8316 RX aif_out widget from
+powering up via DAPM when arecord opens the capture PCM (I2S OUT stays
+inactive, bias_level stays Off). That second issue is not addressed
+here — this patch only fixes the static DTS topology so a future codec
+or audio-graph-card driver fix can complete the chain.
+
+Signed-off-by: Markus Fritsche <mfritsche@reauktion.de>
+Generated-by: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
+index e3954851b0cb..e95545eea16a 100644
+--- a/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-coolpi-cm5-genbook.dts
+@@ -377,11 +377,13 @@ &analog_sound {
+ 	pinctrl-names = "default";
+ 	pinctrl-0 = <&hp_det>;
+ 
+-	widgets = "Microphone", "Mic Jack",
++	widgets = "Microphone", "Main Mic",
++		  "Microphone", "Headset Mic",
+ 		  "Headphone", "Headphones",
+ 		  "Speaker", "Speaker";
+ 
+-	routing = "MIC2", "Mic Jack",
++	routing = "MIC1", "Main Mic",
++		  "MIC2", "Headset Mic",
+ 		  "Headphones", "HPOL",
+ 		  "Headphones", "HPOR",
+ 		  "Amplifier", "HPOL",
+@@ -633,3 +635,4 @@ &pwm15 {
+ 	pinctrl-0 = <&pwm15m3_pins>;
+ 	status = "okay";
+ };
++
+-- 
+2.54.0
+
