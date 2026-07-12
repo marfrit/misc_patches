@@ -23,3 +23,26 @@ Patches 0010 provides the kernel-side fixes for suspend/resume. Full suspend als
 ## Audio
 
 Patch 0004 adds the DTS configuration. The speaker also requires an ALSA UCM2 patch (see `misc/` directory) that adds a `SectionVerb` with the DAC mixer switch initialization and a `Speaker` device to the `rk3588-es8316` HiFi profile.
+
+## Kernel 7.1 Forward-Port Status (2026-07-13)
+
+Forward-ported to **linux-7.1** (`marfrit/linux-7.1-rockchip`, v7.1-rc5+). Builds and **boots to a
+working desktop**: panthor GPU comes up, the internal eDP panel lights at 1920x1080, and the SDDM
+greeter is reached.
+
+Two boot-log warnings look alarming but are **benign** and do **not** need patches:
+
+- `drm_bridge.c: Missing drm_bridge_add() before attach` (rockchip eDP path). `analogix_dp` already
+  carries the upstream `devm_drm_bridge_alloc()` conversion (it missed the bulk commit `9c399719cfb9`
+  and was fixed in a follow-up; the conversion is present in this tree). The bridge still attaches and
+  the eDP comes up at 1920x1080 — cosmetic.
+- `panel-edp.c:814: Unknown panel CSO 0x144a, using conservative timings`. The GenBook eDP EDID isn't
+  in panel-edp's timing table, so it falls back to conservative timings that work fine. Optional:
+  add a table entry for panel `CSO 0x144a`.
+
+**The real 7.1 gotcha is a module-install issue, not a kernel change.** A 7.1 build deployed with an
+*incomplete* `/lib/modules` — missing the whole `drivers/input/` subtree (incl. `uinput.ko`) despite
+`CONFIG_INPUT_UINPUT=m` in the built image — presents as "won't boot": display + SDDM come up fine, but
+with no `/dev/uinput`, kmonad restart-loops and the **keyboard is dead**, so you can't log in at the
+greeter. Verify the module deploy is complete before blaming the kernel:
+`find /lib/modules/<ver>/kernel/drivers/input -name '*.ko*'` must be non-empty, then run `depmod <ver>`.
