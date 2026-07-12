@@ -26,23 +26,25 @@ Patch 0004 adds the DTS configuration. The speaker also requires an ALSA UCM2 pa
 
 ## Kernel 7.1 Forward-Port Status (2026-07-13)
 
-Forward-ported to **linux-7.1** (`marfrit/linux-7.1-rockchip`, v7.1-rc5+). Builds and **boots to a
-working desktop**: panthor GPU comes up, the internal eDP panel lights at 1920x1080, and the SDDM
-greeter is reached.
+Forward-ported to **linux-7.1** (`marfrit/linux-7.1-rockchip`, v7.1-rc5+). It builds and reaches
+userspace, but is **NOT usable yet — the internal eDP panel stays black** (backlight on, no image).
 
-Two boot-log warnings look alarming but are **benign** and do **not** need patches:
+**Blocker — eDP video stream clock never locks:**
+`rockchip-dp fded0000.edp: Ignoring timeout of video streamclk ok`. VOP2 sets its dclk, the eDP-1
+connector reports connected + enabled at 1920x1080, and a plasma/kwin session actually runs — but the
+eDP link carries no video (the streamclk timeout is silently ignored), so the panel shows nothing. This
+is a real RK3588 eDP clock/PHY regression vs the working fourier (7.0-rc3) kernel. **Open — needs the eDP
+video-clock/PHY path debugged and compared against fourier.** (GenBook reverted to fourier meanwhile.)
 
-- `drm_bridge.c: Missing drm_bridge_add() before attach` (rockchip eDP path). `analogix_dp` already
-  carries the upstream `devm_drm_bridge_alloc()` conversion (it missed the bulk commit `9c399719cfb9`
-  and was fixed in a follow-up; the conversion is present in this tree). The bridge still attaches and
-  the eDP comes up at 1920x1080 — cosmetic.
-- `panel-edp.c:814: Unknown panel CSO 0x144a, using conservative timings`. The GenBook eDP EDID isn't
-  in panel-edp's timing table, so it falls back to conservative timings that work fine. Optional:
-  add a table entry for panel `CSO 0x144a`.
+**Benign — NOT the cause (do not chase these):**
+- `[drm] Missing drm_bridge_add() before attach` — `analogix_dp` already carries the upstream
+  `devm_drm_bridge_alloc()` conversion in this tree; cosmetic, the bridge still attaches.
+- `panel-edp.c:814 Unknown panel CSO 0x144a, using conservative timings` — GenBook eDP EDID not in
+  panel-edp's table; power-sequencing only, not the black screen. (Optional: add a `CSO 0x144a` entry.)
 
-**The real 7.1 gotcha is a module-install issue, not a kernel change.** A 7.1 build deployed with an
-*incomplete* `/lib/modules` — missing the whole `drivers/input/` subtree (incl. `uinput.ko`) despite
-`CONFIG_INPUT_UINPUT=m` in the built image — presents as "won't boot": display + SDDM come up fine, but
-with no `/dev/uinput`, kmonad restart-loops and the **keyboard is dead**, so you can't log in at the
-greeter. Verify the module deploy is complete before blaming the kernel:
-`find /lib/modules/<ver>/kernel/drivers/input -name '*.ko*'` must be non-empty, then run `depmod <ver>`.
+**Separate, already fixed — incomplete module install (dead keyboard).** A 7.1 build deployed with a
+truncated `/lib/modules` (only 896 of 3550 modules; `drivers/input/` incl. `uinput.ko` missing despite
+`CONFIG_INPUT_UINPUT=m`) leaves no `/dev/uinput` -> kmonad restart-loops -> dead keyboard at the (black)
+greeter. Fixed by completing `make modules_install` + rsync to the GenBook + `depmod`. Verify deploy
+completeness: `find /lib/modules/<ver>/kernel/drivers/input -name '*.ko*'` must be non-empty. This was a
+second bug stacked on the black screen, not its cause.
