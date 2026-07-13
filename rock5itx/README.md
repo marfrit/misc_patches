@@ -1,18 +1,26 @@
 # Volta — Rock 5 ITX+ (RK3588) upstream kernel status & handoff
 
 **Board:** Radxa ROCK 5 ITX+ (RK3588). In the fleet this is **boltzmann** (kernel-dev host, also the
-current RK3588 **NPU-driver vendor** host — mind its load before long builds).
-**Last upstream sweep:** 2026-07-13 (covered mid-May → 2026-07-13). See also the linux-rockchip ML
-cadence note; read the list via the Anubis workaround below.
+current RK3588 **NPU-driver vendor** host — mind its load before long builds). Boltzmann boots via
+**UEFI (edk2-rk3588)** and runs BredOS.
+**Volta subprojects:** kernel = **Neutron** (`~/src/neutron/`), UEFI = **Quark** (edk2-rk3588). The
+kernel branch worked in the 2026-07 session was `marfrit/linux-7.1-rockchip` on boltzmann
+(`~/src/linux-rockchip`) — reconcile with Neutron's tree before building.
+**Last upstream sweep:** 2026-07-13 (mid-May → 2026-07-13). Read the linux-rockchip list via the Anubis
+workaround at the bottom.
 
-This doc lets another agent pick up Volta without re-deriving the landscape. TL;DR per topic:
+This doc lets another agent pick up Volta without re-deriving the landscape.
 
 | Topic | Upstream state (mid-2026) | Action for Volta |
 |-------|---------------------------|------------------|
 | Video output (DP→HDMI "card house") | Landing, actively iterating | **Track + cherry-pick the two series below** |
-| Video decode (rkvdec) | H.264/H.265/AV1 merged; VP9 WIP | Present in the marfrit tree already; wire up + test |
-| NPU (rocket) | **Mainline since ~6.16 (mid-2025)** | Base is upstream; frontier is Mesa/Teflon + perf |
-| RAM / DDR freq scaling | **Nothing upstream** | Vendor-BSP/rkbin-TPL + our own DDR-blob-RE only |
+| Video decode (rkvdec) | H.264/H.265/AV1 merged; VP9 WIP | Already in the marfrit tree; wire up + test |
+| NPU (rocket) | **Mainline since ~6.16 (mid-2025)** | Base upstream; frontier is Mesa/Teflon + perf |
+| RAM / DDR freq scaling | **Nothing upstream** | Not in Volta scope — boltzmann runs stock firmware |
+
+**Coordination with Coulomb (GenBook / ampere):** generic RK3588 fixes — the `DCLK_VOP2_SRC` clock gotcha
+(§2), video decode (§3), NPU (§4) — develop once and **cross-apply to both boards**. Only the **Rock 5
+ITX RA620 DP2HDMI DTS (§1)** is Volta-target-specific. Don't duplicate generic work across the umbrellas.
 
 ---
 
@@ -39,12 +47,12 @@ together light this up (neither merged yet as of 2026-07-13):
 - **VOP2 improvements** (~msg 073038+): YUV420/YUV422 color-format support + reset/robustness.
 
 **Handoff action:** once Reichel v12 + Andy Yan v7 land (or to test early), cherry-pick both onto the
-Volta kernel branch, enable `ROCKCHIP_DW_DP` + the `radxa,ra620` bridge in the Rock 5 ITX DT, and verify
-HDMI0 output. Read the series via `lists.infradead.org/pipermail/linux-rockchip/2026-July/`.
+Volta/Neutron kernel branch, enable `ROCKCHIP_DW_DP` + the `radxa,ra620` bridge in the Rock 5 ITX DT, and
+verify HDMI0 output. Series live at `lists.infradead.org/pipermail/linux-rockchip/2026-July/`.
 
 ---
 
-## 2. The DP/eDP clock gotcha (learned on the GenBook, applies to Volta)
+## 2. The DP/eDP clock gotcha (learned on the GenBook, GENERIC — applies to Volta)
 
 RK3588 non-HDMI display outputs (eDP via analogix, **and DP via dw_dp**) take their pixel clock from
 **`DCLK_VOP2_SRC`** (a divider off the gpll/cpll/v0pll/aupll pool). HDMI reparents its VP dclk to the
@@ -79,8 +87,10 @@ coverage — this is the Rosenblatt-campaign territory boltzmann is currently ve
 
 ## 5. RAM / DDR
 **No upstream RK3588 DDR/dmc/devfreq/DFS driver exists** (patchwork empty for the whole window). DDR
-frequency scaling remains vendor-BSP (rkbin TPL / `rk3588-dmc-oc-*` overlays) + the fleet's own
-DDR-blob reverse-engineering. Don't expect upstream help here.
+frequency scaling is vendor-BSP-only (rkbin TPL / `rk3588-dmc-oc-*` overlays). **For Volta specifically
+this is out of scope:** the Rock 5 ITX+ runs fine on **stock firmware** — the DDR-blob reverse-engineering
+effort is **GenBook-specific** (only the GenBook ships a buggy DDR blob that needed rewriting). Don't
+chase DDR on Volta.
 
 ---
 
